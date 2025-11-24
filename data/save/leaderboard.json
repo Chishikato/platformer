@@ -1,0 +1,103 @@
+{
+  "single": [
+    {
+      "name": "Player",
+      "score": 16927,
+      "time": 1763912083.0719867
+    },
+    {
+      "name": "Player",
+      "score": 5987,
+      "time": 1763853339.4213345
+    },
+    {
+      "name": "Player",
+      "score": 5589,
+      "time": 1763912409.1125665
+    },
+    {
+      "name": "Player",
+      "score": 4203,
+      "time": 1763911500.9962702
+    },
+    {
+      "name": "Player",
+      "score": 3172,
+      "time": 1763862364.3680453
+    },
+    {
+      "name": "Player",
+      "score": 2758,
+      "time": 1763853560.4068887
+    },
+    {
+      "name": "Player",
+      "score": 2728,
+      "time": 1763832681.664872
+    },
+    {
+      "name": "Player",
+      "score": 2707,
+      "time": 1763846981.0114245
+    },
+    {
+      "name": "Player",
+      "score": 2206,
+      "time": 1763911780.3216646
+    },
+    {
+      "name": "Player",
+      "score": 2064,
+      "time": 1763853282.3664153
+    }
+  ],
+  "coop": [
+    {
+      "name": "Team",
+      "score": 773,
+      "time": 1763833620.8592405
+    },
+    {
+      "name": "Team",
+      "score": 574,
+      "time": 1763870276.854085
+    },
+    {
+      "name": "Team",
+      "score": 154,
+      "time": 1763834917.245941
+    },
+    {
+      "name": "Team",
+      "score": 143,
+      "time": 1763914453.405305
+    },
+    {
+      "name": "Team",
+      "score": 0,
+      "time": 1763914144.7675118
+    }
+  ],
+  "versus": [
+    {
+      "name": "P1 WINS",
+      "score": 1262,
+      "time": 1763870249.5603988
+    },
+    {
+      "name": "P2 WINS",
+      "score": 953,
+      "time": 1763835660.3436825
+    },
+    {
+      "name": "P1 WINS",
+      "score": 298,
+      "time": 1763914434.1397192
+    },
+    {
+      "name": "P1 WINS",
+      "score": 73,
+      "time": 1763914136.5906293
+    }
+  ]
+}
