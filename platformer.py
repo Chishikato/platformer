@@ -1827,86 +1827,83 @@ def main():
     def rebuild_mp_menu():
         mp_buttons.clear()
         
-        # --- LEFT PANEL (Host Controls) ---
-        # Host Game
-        mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Host Game", font_med, lambda: network.host()))
-
-        # Start Match (Network)
-        def host_start_action():
-            if not network.connected: return
-            network.send_start_game()
-            time.sleep(0.2)
-            start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
-
-        start_label = "Start Match"
-        start_cb = host_start_action
-        is_disabled = False
-        
+        # ==============================
+        # HOST LOBBY VIEW
+        # ==============================
         if network.role == ROLE_HOST:
+            # --- LEFT PANEL (Lobby Controls) ---
+            # Room Name
+            mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Room: HOST", font_med, None, color=COL_ACCENT_1))
+            mp_buttons.append(Button(pygame.Rect(30, 120, 160, 30), "Invite Players", font_small, lambda: print("Invite clicked")))
+            mp_buttons.append(Button(pygame.Rect(30, 160, 160, 30), "Kick Player", font_small, lambda: print("Kick clicked"), color=(60, 20, 20)))
+            mp_buttons.append(Button(pygame.Rect(30, 270, 160, 30), "Disband Lobby", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(80, 10, 10)))
+
+            # --- RIGHT PANEL (Player List & Actions) ---
+            
+            # Mode Toggle (Top of right panel)
+            def toggle_mode():
+                nonlocal mp_mode
+                mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
+                if network.role == ROLE_HOST: network.send_lobby_mode(mp_mode)
+                rebuild_mp_menu()
+            
+            mode_txt = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Race'}"
+            mp_buttons.append(Button(pygame.Rect(220, 70, 230, 30), mode_txt, font_small, toggle_mode))
+
+            # Leave Button (Bottom LEFT of Right Box)
+            # Positioned at y=285 to sit at the very bottom of the panel
+            mp_buttons.append(Button(pygame.Rect(220, 285, 140, 30), "Leave", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 60, 70)))
+
+            # Start Match (Bottom RIGHT of Right Box)
+            def host_start_action():
+                if not network.connected: return
+                network.send_start_game()
+                time.sleep(0.2)
+                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
+            
+            start_btn = Button(pygame.Rect(460, 285, 140, 30), "Start Match", font_small, host_start_action, accent=COL_ACCENT_2)
             if not network.connected:
-                start_label = "Waiting for player..."
-                is_disabled = True
-        elif network.role == ROLE_CLIENT:
-            start_label = "Waiting for Host..."
-            is_disabled = True
-            start_cb = None
+                start_btn.disabled = True
+                start_btn.text = "Waiting..."
+            mp_buttons.append(start_btn)
 
-        start_btn = Button(pygame.Rect(30, 120, 160, 40), start_label, font_med, start_cb, accent=COL_ACCENT_2)
-        start_btn.disabled = is_disabled
-        mp_buttons.append(start_btn)
+        # ==============================
+        # BROWSER VIEW (Default/Client)
+        # ==============================
+        else:
+            # Left Panel
+            mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Host Game", font_med, lambda: (network.host(), rebuild_mp_menu())))
+            if network.connected:
+                mp_buttons.append(Button(pygame.Rect(30, 170, 160, 30), "Disconnect", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 20, 20)))
 
-        if network.connected:
-            mp_buttons.append(Button(pygame.Rect(30, 170, 160, 30), "Disconnect", font_small, lambda: network.close(), color=(60, 20, 20)))
+            # Right Panel
+            def toggle_mode():
+                nonlocal mp_mode
+                mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
+                rebuild_mp_menu()
+            
+            mode_txt = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Race'}"
+            mp_buttons.append(Button(pygame.Rect(220, 70, 230, 30), mode_txt, font_small, toggle_mode))
 
-        # --- RIGHT PANEL (Browser & Local) ---
-        
-        # Mode Toggle (Top Left of Right Box)
-        def toggle_mode():
-            nonlocal mp_mode
-            if network.role == ROLE_CLIENT: return 
-            mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
-            if network.role == ROLE_HOST: network.send_lobby_mode(mp_mode)
-            rebuild_mp_menu()
-        
-        mode_txt = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Race'}"
-        # Aligned to Col 1 (x=220, w=230)
-        mp_buttons.append(Button(pygame.Rect(220, 70, 230, 30), mode_txt, font_small, toggle_mode))
+            def play_local():
+                network.close() 
+                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, local_two_players=True, bg_obj=night_bg)
+            mp_buttons.append(Button(pygame.Rect(460, 70, 140, 30), "Play Local", font_small, play_local, accent=COL_ACCENT_3))
 
-        # Play Local Button (Next to Mode)
-        def play_local():
-            network.close() # Ensure clean slate
-            start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, local_two_players=True, bg_obj=night_bg)
+            mp_ip_input.rect = pygame.Rect(220, 110, 220, 30)
+            mp_buttons.append(Button(pygame.Rect(450, 110, 50, 30), "Paste", font_small, lambda: mp_ip_input.paste_text()))
+            mp_buttons.append(Button(pygame.Rect(510, 110, 90, 30), "Connect", font_small, lambda: network.join(mp_ip_input.text.strip())))
+            mp_ip_input.on_enter = lambda text: network.join(text.strip())
 
-        # Aligned to Col 2 (x=460, w=140)
-        mp_buttons.append(Button(pygame.Rect(460, 70, 140, 30), "Play Local", font_small, play_local, accent=COL_ACCENT_3))
-
-        # IP Input, Paste & Join
-        # Aligned to Col 1 (x=220, w=220)
-        mp_ip_input.rect = pygame.Rect(220, 110, 220, 30)
-        
-        # Paste Button (Small)
-        mp_buttons.append(Button(pygame.Rect(450, 110, 50, 30), "Paste", font_small, lambda: mp_ip_input.paste_text()))
-
-        # Connect Button
-        mp_buttons.append(Button(pygame.Rect(510, 110, 90, 30), "Connect", font_small, lambda: network.join(mp_ip_input.text.strip())))
-
-        # Add enter callback to input
-        mp_ip_input.on_enter = lambda text: network.join(text.strip())
-
-        # List Join - Moved down slightly to avoid overlap with list/status
-        def join_selected():
-            if selected_room:
-                mp_ip_input.text = selected_room
-                network.join(selected_room)
-        
-        # Adjusted Y positions to prevent overlap
-        btn_y = 285 
-        # Aligned to Col 1 (x=220, w=230)
-        mp_buttons.append(Button(pygame.Rect(220, btn_y, 230, 30), "Join Selected", font_small, join_selected))
-        # Aligned to Col 2 (x=460, w=140)
-        mp_buttons.append(Button(pygame.Rect(460, btn_y, 140, 30), "Refresh", font_small, lambda: (network.scanner.found_hosts.clear(), room_list.clear())))
-
-        mp_buttons.append(Button(pygame.Rect(20, VIRTUAL_H - 50, 80, 30), "Back", font_small, lambda: (network.close(), set_state(STATE_MAIN_MENU))))
+            def join_selected():
+                if selected_room:
+                    mp_ip_input.text = selected_room
+                    network.join(selected_room)
+            
+            btn_y = 285 
+            mp_buttons.append(Button(pygame.Rect(220, btn_y, 230, 30), "Join Selected", font_small, join_selected))
+            mp_buttons.append(Button(pygame.Rect(460, btn_y, 140, 30), "Refresh", font_small, lambda: (network.scanner.found_hosts.clear(), room_list.clear())))
+            mp_buttons.append(Button(pygame.Rect(20, VIRTUAL_H - 50, 80, 30), "Back", font_small, lambda: (network.close(), set_state(STATE_MAIN_MENU))))
 
     def set_state(s):
         nonlocal game_state
@@ -2068,41 +2065,65 @@ def main():
         elif game_state == STATE_MULTIPLAYER_MENU:
             draw_text_shadow(canvas, font_big, "Network Lobby", 20, 20)
             
-            # Panels
-            draw_panel(canvas, pygame.Rect(20, 60, 180, 260)) # Controls
-            draw_panel(canvas, pygame.Rect(210, 60, 400, 260)) # Browser
+            draw_panel(canvas, pygame.Rect(20, 60, 180, 260)) # Left Panel
+            draw_panel(canvas, pygame.Rect(210, 60, 400, 260)) # Right Panel
             
-            # Server Browser Header
-            canvas.blit(font_small.render("LAN Hosts:", False, COL_ACCENT_1), (220, 150))
-            
-            # List - Reduced height to make room for status text and buttons
-            list_rect = pygame.Rect(220, 170, 380, 80)
-            pygame.draw.rect(canvas, (10, 10, 20), list_rect)
-            pygame.draw.rect(canvas, COL_UI_BORDER, list_rect, 1)
-            
-            if not room_list:
-                canvas.blit(font_small.render("Scanning network...", False, (80, 80, 90)), (230, 180))
-            else:
-                for i, ip in enumerate(room_list):
-                    y_pos = 170 + i * 24
-                    if y_pos > 240: break
-                    row_rect = pygame.Rect(220, y_pos, 380, 20)
-                    if ip == selected_room:
-                        pygame.draw.rect(canvas, (40, 40, 60), row_rect)
-                    elif row_rect.collidepoint(pygame.mouse.get_pos()[0] - offset_x, pygame.mouse.get_pos()[1] - offset_y): 
-                          pygame.draw.rect(canvas, (30, 30, 40), row_rect)
-                    canvas.blit(font_small.render(f"HOST: {ip}", False, COL_TEXT), (225, y_pos + 2))
+            # ==============================
+            # DRAWING IF HOSTING
+            # ==============================
+            if network.role == ROLE_HOST:
+                # Header moved up to y=115
+                canvas.blit(font_small.render("Connected Players:", False, COL_ACCENT_1), (220, 115))
+                
+                # Player List Box centered vertically in the available space
+                # Starts at 135, Ends at 250 (Height 115)
+                list_rect = pygame.Rect(220, 135, 380, 115)
+                pygame.draw.rect(canvas, (10, 10, 20), list_rect)
+                pygame.draw.rect(canvas, COL_UI_BORDER, list_rect, 1)
 
+                # Player Names relative to new list_rect
+                canvas.blit(font_small.render("1. You (Host)", False, COL_ACCENT_3), (225, 140))
+
+                if network.connected:
+                    canvas.blit(font_small.render("2. Player 2 (Connected)", False, COL_ACCENT_2), (225, 160))
+                else:
+                    canvas.blit(font_small.render("2. ... Waiting for player ...", False, (100, 100, 100)), (225, 160))
+
+            # ==============================
+            # DRAWING IF BROWSING
+            # ==============================
+            else:
+                canvas.blit(font_small.render("LAN Hosts:", False, COL_ACCENT_1), (220, 150))
+                
+                # Browser List Box
+                list_rect = pygame.Rect(220, 170, 380, 80)
+                pygame.draw.rect(canvas, (10, 10, 20), list_rect)
+                pygame.draw.rect(canvas, COL_UI_BORDER, list_rect, 1)
+                
+                if not room_list:
+                    canvas.blit(font_small.render("Scanning network...", False, (80, 80, 90)), (230, 180))
+                else:
+                    for i, ip in enumerate(room_list):
+                        y_pos = 170 + i * 24
+                        if y_pos > 240: break
+                        row_rect = pygame.Rect(220, y_pos, 380, 20)
+                        if ip == selected_room:
+                            pygame.draw.rect(canvas, (40, 40, 60), row_rect)
+                        elif row_rect.collidepoint(pygame.mouse.get_pos()[0] - offset_x, pygame.mouse.get_pos()[1] - offset_y): 
+                             pygame.draw.rect(canvas, (30, 30, 40), row_rect)
+                        canvas.blit(font_small.render(f"HOST: {ip}", False, COL_TEXT), (225, y_pos + 2))
+
+                mp_ip_input.draw(canvas)
+
+            # Status Text positioned safely at y=260 (between list box and bottom buttons)
             status_col = (100, 255, 100) if network.connected else (100, 100, 100)
             status_txt = "STATUS: CONNECTED" if network.connected else "STATUS: OFFLINE"
-            if network.role == ROLE_HOST: status_txt += " (HOST)"
+            if network.role == ROLE_HOST: status_txt = "STATUS: HOSTING (LOBBY)"
             elif network.role == ROLE_CLIENT: status_txt += " (CLIENT)"
             
-            # Moved status text to y=260 (between list and buttons)
             draw_text_shadow(canvas, font_small, status_txt, 220, 260, col=status_col)
 
             for b in mp_buttons: b.draw(canvas, dt)
-            mp_ip_input.draw(canvas)
 
         # Scale and Draw to Window
         window.fill((0, 0, 0)) # Letterbox bars
