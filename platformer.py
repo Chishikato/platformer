@@ -20,9 +20,9 @@ START_FPS = 60
 # COLORS (Synthwave/Retro Palette)
 COL_BG = (20, 20, 35)
 COL_GRID = (40, 40, 60)
-COL_ACCENT_1 = (0, 234, 255)      # Cyan
-COL_ACCENT_2 = (255, 0, 85)       # Hot Pink
-COL_ACCENT_3 = (255, 215, 0)      # Gold
+COL_ACCENT_1 = (0, 234, 255)       # Cyan
+COL_ACCENT_2 = (255, 0, 85)        # Hot Pink
+COL_ACCENT_3 = (255, 215, 0)       # Gold
 COL_TEXT = (240, 240, 255)
 COL_UI_BG = (15, 15, 25)
 COL_UI_BORDER = (60, 60, 90)
@@ -33,15 +33,15 @@ BASE_GRAVITY = 1400.0
 BASE_JUMP_VEL = -550.0
 BASE_PLAYER_SPEED = 220.0
 WALL_SLIDE_SPEED = 50.0 
-WALL_JUMP_X = 250.0       
-WALL_JUMP_Y = -450.0      
+WALL_JUMP_X = 250.0        
+WALL_JUMP_Y = -450.0       
 
-SCROLL_BASE = 200.0       
+SCROLL_BASE = 200.0        
 SCROLL_MAX = 450.0
 
-BASE_SLAM_SPEED = 900.0               
-BASE_SLAM_COOLDOWN = 1.0             
-SLAM_BASE_RADIUS = 40.0       
+BASE_SLAM_SPEED = 900.0                 
+BASE_SLAM_COOLDOWN = 1.0               
+SLAM_BASE_RADIUS = 40.0        
 SLAM_RADIUS_PER_HEIGHT = 0.25  
 
 TILE_SIZE = 20 
@@ -142,6 +142,7 @@ def draw_text_shadow(surf, font, text, x, y, col=COL_TEXT, shadow_col=COL_SHADOW
         base_x, base_y = x, final_y
 
         if pulse:
+            # Cyan glow: soft copies around the text
             glow = font.render(text, False, col)
             glow.set_alpha(90)
             for dx, dy in [(-3, 0), (3, 0), (0, -3), (0, 3), (-2, -2), (2, 2)]:
@@ -208,7 +209,7 @@ def load_save_data():
                     data["credits"] = float(saved["coins"])
                 else:
                     data["credits"] = float(saved.get("credits", 0))
-                  
+                   
                 if "upgrades" in saved:
                     for k in data["upgrades"]:
                         data["upgrades"][k] = saved["upgrades"].get(k, 0)
@@ -798,6 +799,16 @@ class NetworkManager:
         self.role = ROLE_LOCAL_ONLY
         self.remote_game_over = False
 
+    def reset_connection_only(self):
+        if self.sock:
+            try: self.sock.close()
+            except: pass
+        self.sock = None
+        self.connected = False
+        self.broadcasting = True
+        self.remote_state = {"x": 0.0, "y": 0.0, "alive": True, "score": 0, "seed": 0, "hp": 3}
+        self._recv_buffer = ""
+
     def start_broadcast_thread(self):
         self.broadcasting = True
         def broadcast_loop():
@@ -821,6 +832,7 @@ class NetworkManager:
                 srv.setblocking(False)
                 self.server_socket = srv
                 while self.hosting:
+                    # Only look for a connection if we don't have one
                     if not self.connected:
                         try:
                             readable, _, _ = select.select([srv], [], [], 0.5)
@@ -833,7 +845,8 @@ class NetworkManager:
                                     self.broadcasting = False 
                                     self.remote_state = {"x": 0.0, "y": 0.0, "alive": True, "score": 0, "seed": 0, "hp": 3} 
                         except: pass
-                    else: time.sleep(0.2)
+                    else:
+                        time.sleep(0.2)
                 srv.close()
             except: self.close()
         t = threading.Thread(target=server_thread, daemon=True)
@@ -886,12 +899,23 @@ class NetworkManager:
         except (BlockingIOError, socket.timeout): return
         except Exception:
             with self.lock:
-                self.close()
+                if self.role == ROLE_HOST:
+                    self.reset_connection_only()
+                else:
+                    self.close()
             return
 
         while "\n" in self._recv_buffer:
             line, self._recv_buffer = self._recv_buffer.split("\n", 1)
             if not line: continue
+            
+            if line.startswith("K|"):
+                with self.lock:
+                    # Client received kick: Close immediately
+                    self.close()
+                continue
+            # -------------------------------
+
             if line.startswith("G|"):
                 with self.lock:
                     self.remote_game_over = True
@@ -903,6 +927,8 @@ class NetworkManager:
             if line.startswith("S|"):
                 with self.lock: self.remote_start_triggered = True
                 continue
+            
+            # (Rest of standard position parsing...)
             parts = line.split(",")
             if len(parts) < 4: continue
             try:
@@ -934,6 +960,17 @@ class NetworkManager:
                 self.remote_game_over = False
                 self.remote_winner_text = ""
         return flag, text
+    
+    def kick_client(self):
+        """Host sends a kick message then drops the connection."""
+        if self.sock and self.connected:
+            try:
+                # Send kick packet so client knows why they were dropped
+                self.sock.sendall(b"K|KICK\n")
+            except: pass
+            
+            time.sleep(0.1)
+            self.reset_connection_only()
 
 # =========================
 # GAME ENTITIES
@@ -1740,6 +1777,7 @@ def main():
     settings_scroll = 0.0
     mp_buttons = []
     mp_mode = MODE_VERSUS
+    show_kick_confirm = False
     
     # Initialize with placeholder text
     mp_ip_input = TextInput(pygame.Rect(140, 170, 200, 30), font_small, "", "Enter IP Address...")
@@ -1831,16 +1869,26 @@ def main():
         # HOST LOBBY VIEW
         # ==============================
         if network.role == ROLE_HOST:
-            # --- LEFT PANEL (Lobby Controls) ---
-            # Room Name
+            # --- LEFT PANEL ---
             mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Room: HOST", font_med, None, color=COL_ACCENT_1))
             mp_buttons.append(Button(pygame.Rect(30, 120, 160, 30), "Invite Players", font_small, lambda: print("Invite clicked")))
             mp_buttons.append(Button(pygame.Rect(30, 160, 160, 30), "Kick Player", font_small, lambda: print("Kick clicked"), color=(60, 20, 20)))
             mp_buttons.append(Button(pygame.Rect(30, 270, 160, 30), "Disband Lobby", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(80, 10, 10)))
 
-            # --- RIGHT PANEL (Player List & Actions) ---
+            def trigger_kick_confirm():
+                nonlocal show_kick_confirm
+                show_kick_confirm = True
+
+            kick_btn = Button(pygame.Rect(30, 160, 160, 30), "Kick Player", font_small, trigger_kick_confirm, color=(60, 20, 20))
             
-            # Mode Toggle (Top of right panel)
+            # Only enable kick button if someone is actually connected
+            if not network.connected:
+                kick_btn.disabled = True
+                kick_btn.base_color = (40, 20, 20) # Dimmed
+            
+            mp_buttons.append(kick_btn)
+
+            # --- RIGHT PANEL (Controls) ---
             def toggle_mode():
                 nonlocal mp_mode
                 mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
@@ -1850,11 +1898,8 @@ def main():
             mode_txt = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Race'}"
             mp_buttons.append(Button(pygame.Rect(220, 70, 230, 30), mode_txt, font_small, toggle_mode))
 
-            # Leave Button (Bottom LEFT of Right Box)
-            # Positioned at y=285 to sit at the very bottom of the panel
             mp_buttons.append(Button(pygame.Rect(220, 285, 140, 30), "Leave", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 60, 70)))
 
-            # Start Match (Bottom RIGHT of Right Box)
             def host_start_action():
                 if not network.connected: return
                 network.send_start_game()
@@ -1868,13 +1913,35 @@ def main():
             mp_buttons.append(start_btn)
 
         # ==============================
-        # BROWSER VIEW (Default/Client)
+        # CONNECTED CLIENT LOBBY VIEW
+        # ==============================
+        elif network.role == ROLE_CLIENT and network.connected:
+            # --- LEFT PANEL ---
+            mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Room: CLIENT", font_med, None, color=COL_ACCENT_3))
+            mp_buttons.append(Button(pygame.Rect(30, 170, 160, 30), "Disconnect", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 20, 20)))
+
+            # --- RIGHT PANEL (Visuals only - Disabled/Overlayed) ---
+            
+            # Mode Toggle (Dummy - Visual only so it appears under the box)
+            mode_txt = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Race'}"
+            dummy_mode = Button(pygame.Rect(220, 70, 230, 30), mode_txt, font_small, None) 
+            dummy_mode.disabled = True # Disable interaction
+            mp_buttons.append(dummy_mode)
+
+            # Leave Button (Still functional for client)
+            mp_buttons.append(Button(pygame.Rect(220, 285, 140, 30), "Leave", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 60, 70)))
+
+            # Start Match (Dummy - Visual only)
+            dummy_start = Button(pygame.Rect(460, 285, 140, 30), "Start Match", font_small, None, accent=COL_ACCENT_2)
+            dummy_start.disabled = True
+            mp_buttons.append(dummy_start)
+
+        # ==============================
+        # BROWSER VIEW (Disconnected)
         # ==============================
         else:
             # Left Panel
             mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Host Game", font_med, lambda: (network.host(), rebuild_mp_menu())))
-            if network.connected:
-                mp_buttons.append(Button(pygame.Rect(30, 170, 160, 30), "Disconnect", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 20, 20)))
 
             # Right Panel
             def toggle_mode():
@@ -1896,13 +1963,25 @@ def main():
             mp_ip_input.on_enter = lambda text: network.join(text.strip())
 
             def join_selected():
-                if selected_room:
-                    mp_ip_input.text = selected_room
-                    network.join(selected_room)
-            
+                target = selected_room
+                if not target and mp_ip_input.text:
+                    target = mp_ip_input.text.strip()
+                    
+                if target:
+                    mp_ip_input.text = target
+                    network.join(target)
+                    
             btn_y = 285 
             mp_buttons.append(Button(pygame.Rect(220, btn_y, 230, 30), "Join Selected", font_small, join_selected))
-            mp_buttons.append(Button(pygame.Rect(460, btn_y, 140, 30), "Refresh", font_small, lambda: (network.scanner.found_hosts.clear(), room_list.clear())))
+
+            def refresh_action():
+                nonlocal selected_room
+                network.scanner.found_hosts.clear()
+                room_list.clear()
+                selected_room = None     # Unselect the item
+                mp_ip_input.text = ""    # Clear the input box too since selection fills it
+            
+            mp_buttons.append(Button(pygame.Rect(460, btn_y, 140, 30), "Refresh", font_small, refresh_action))
             mp_buttons.append(Button(pygame.Rect(20, VIRTUAL_H - 50, 80, 30), "Back", font_small, lambda: (network.close(), set_state(STATE_MAIN_MENU))))
 
     def set_state(s):
@@ -1998,21 +2077,47 @@ def main():
                     sevt = pygame.event.Event(ui_event.type, {**ui_event.dict, "pos": (ui_event.pos[0], ui_event.pos[1] + settings_scroll)})
                 for w in settings_widgets: w.handle_event(sevt)
             elif game_state == STATE_MULTIPLAYER_MENU:
-                for b in mp_buttons: b.handle_event(ui_event)
-                mp_ip_input.handle_event(ui_event)
-                if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: 
-                    network.close() 
-                    set_state(STATE_MAIN_MENU)
                 
-                if raw_event.type == pygame.MOUSEBUTTONDOWN and raw_event.button == 1:
-                    if "pos" in ui_event.dict:
-                        ux, uy = ui_event.pos
-                        list_start_y = 170 
-                        for i, ip in enumerate(room_list):
-                            r = pygame.Rect(220, list_start_y + i*24, 380, 20) 
-                            if r.collidepoint(ux, uy):
-                                selected_room = ip
-                                mp_ip_input.text = ip
+                # --- NEW: Handle Kick Confirmation Modal ---
+                if show_kick_confirm:
+                    if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE:
+                        show_kick_confirm = False
+                    
+                    elif raw_event.type == pygame.MOUSEBUTTONDOWN and raw_event.button == 1:
+                        if "pos" in ui_event.dict:
+                            mx, my = ui_event.pos
+                            
+                            # Define Modal Rects (Center Screen)
+                            modal_rect = pygame.Rect(VIRTUAL_W//2 - 120, VIRTUAL_H//2 - 60, 240, 120)
+                            btn_yes = pygame.Rect(modal_rect.x + 20, modal_rect.bottom - 40, 90, 30)
+                            btn_no = pygame.Rect(modal_rect.right - 110, modal_rect.bottom - 40, 90, 30)
+
+                            if btn_yes.collidepoint(mx, my):
+                                network.kick_client()
+                                show_kick_confirm = False
+                                rebuild_mp_menu() # Refresh UI to disable kick button
+                            elif btn_no.collidepoint(mx, my):
+                                show_kick_confirm = False
+                            elif not modal_rect.collidepoint(mx, my):
+                                # Clicked outside box -> Cancel
+                                show_kick_confirm = False
+                # -------------------------------------------
+                
+                else:
+                    if ui_event.type == pygame.MOUSEBUTTONDOWN and ui_event.button == 1:
+                        if "pos" in ui_event.dict:
+                            mx, my = ui_event.pos
+                            # Based on list_rect = pygame.Rect(220, 170, 380, 80)
+                            # Row height = 24
+                            if 220 <= mx <= 600 and 170 <= my <= 250:
+                                index = int((my - 170) / 24)
+                                if 0 <= index < len(room_list) and (170 + index * 24 <= 240):
+                                    selected_room = room_list[index]
+                                    mp_ip_input.text = selected_room # Autofill input box
+
+
+                    for b in mp_buttons: b.handle_event(ui_event)
+                    mp_ip_input.handle_event(ui_event)
 
         if game_state == STATE_SETTINGS:
             if settings_widgets:
@@ -2069,28 +2174,52 @@ def main():
             draw_panel(canvas, pygame.Rect(210, 60, 400, 260)) # Right Panel
             
             # ==============================
-            # DRAWING IF HOSTING
+            # DRAWING: HOST OR CONNECTED CLIENT
             # ==============================
-            if network.role == ROLE_HOST:
-                # Header moved up to y=115
-                canvas.blit(font_small.render("Connected Players:", False, COL_ACCENT_1), (220, 115))
+            if network.role == ROLE_HOST or (network.role == ROLE_CLIENT and network.connected):
+                # Draw Header
+                header_text = "Connected Players:"
+                canvas.blit(font_small.render(header_text, False, COL_ACCENT_1), (220, 115))
                 
-                # Player List Box centered vertically in the available space
-                # Starts at 135, Ends at 250 (Height 115)
+                # Player List Box
                 list_rect = pygame.Rect(220, 135, 380, 115)
                 pygame.draw.rect(canvas, (10, 10, 20), list_rect)
                 pygame.draw.rect(canvas, COL_UI_BORDER, list_rect, 1)
 
-                # Player Names relative to new list_rect
-                canvas.blit(font_small.render("1. You (Host)", False, COL_ACCENT_3), (225, 140))
+                # Player Names
+                p1_text = "1. You (Host)" if network.role == ROLE_HOST else "1. Host"
+                p1_col = COL_ACCENT_3 if network.role == ROLE_HOST else COL_ACCENT_2
+                canvas.blit(font_small.render(p1_text, False, p1_col), (225, 140))
 
                 if network.connected:
-                    canvas.blit(font_small.render("2. Player 2 (Connected)", False, COL_ACCENT_2), (225, 160))
+                    p2_text = "2. Player 2" if network.role == ROLE_HOST else "2. You (Client)"
+                    p2_col = COL_ACCENT_2 if network.role == ROLE_HOST else COL_ACCENT_3
+                    canvas.blit(font_small.render(p2_text, False, p2_col), (225, 160))
                 else:
                     canvas.blit(font_small.render("2. ... Waiting for player ...", False, (100, 100, 100)), (225, 160))
 
+                # --- OVERLAY FOR CLIENTS (THE REQUESTED FEATURE) ---
+                if network.role == ROLE_CLIENT and network.connected:
+                    # 1. Overlay for the Mode Toggle (Top Right)
+                    overlay_mode = pygame.Surface((230, 30))
+                    overlay_mode.set_alpha(180) # Semi-transparent
+                    overlay_mode.fill((20, 20, 20)) # Dark box
+                    canvas.blit(overlay_mode, (220, 70))
+                    
+                    # 2. Overlay for the Start Button (Bottom Right)
+                    overlay_start = pygame.Surface((140, 30))
+                    overlay_start.set_alpha(180)
+                    overlay_start.fill((20, 20, 20))
+                    canvas.blit(overlay_start, (460, 285))
+
+                    # 3. "HOST ONLY" Text
+                    # Draw centered on Mode button
+                    draw_text_shadow(canvas, font_small, "HOST ONLY", 220 + 115, 70 + 8, center=True, col=(200, 50, 50))
+                    # Draw centered on Start button
+                    draw_text_shadow(canvas, font_small, "HOST ONLY", 460 + 70, 285 + 8, center=True, col=(200, 50, 50))
+
             # ==============================
-            # DRAWING IF BROWSING
+            # DRAWING: BROWSER VIEW (Disconnected)
             # ==============================
             else:
                 canvas.blit(font_small.render("LAN Hosts:", False, COL_ACCENT_1), (220, 150))
@@ -2124,6 +2253,37 @@ def main():
             draw_text_shadow(canvas, font_small, status_txt, 220, 260, col=status_col)
 
             for b in mp_buttons: b.draw(canvas, dt)
+            
+            if show_kick_confirm:
+                # 1. Dark Overlay
+                overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 150))
+                canvas.blit(overlay, (0, 0))
+
+                # 2. The Box
+                modal_rect = pygame.Rect(VIRTUAL_W//2 - 120, VIRTUAL_H//2 - 60, 240, 120)
+                draw_panel(canvas, modal_rect, color=(30, 10, 10), border=(255, 50, 50))
+
+                # 3. Text
+                draw_text_shadow(canvas, font_med, "KICK PLAYER?", modal_rect.centerx, modal_rect.y + 20, center=True, col=(255, 100, 100))
+                draw_text_shadow(canvas, font_small, "Are you sure?", modal_rect.centerx, modal_rect.y + 45, center=True)
+
+                # 4. Buttons (Manual draw for simplicity, or use Button class)
+                # Yes Button
+                yes_rect = pygame.Rect(modal_rect.x + 20, modal_rect.bottom - 40, 90, 30)
+                is_hover_yes = yes_rect.collidepoint(pygame.mouse.get_pos()[0]/scale - offset_x/scale, pygame.mouse.get_pos()[1]/scale - offset_y/scale)
+                pygame.draw.rect(canvas, (180, 20, 20) if is_hover_yes else (120, 20, 20), yes_rect, border_radius=4)
+                pygame.draw.rect(canvas, (255, 100, 100), yes_rect, 2, border_radius=4)
+                txt_yes = font_small.render("YES", False, COL_TEXT)
+                canvas.blit(txt_yes, txt_yes.get_rect(center=yes_rect.center))
+
+                # No Button
+                no_rect = pygame.Rect(modal_rect.right - 110, modal_rect.bottom - 40, 90, 30)
+                is_hover_no = no_rect.collidepoint(pygame.mouse.get_pos()[0]/scale - offset_x/scale, pygame.mouse.get_pos()[1]/scale - offset_y/scale)
+                pygame.draw.rect(canvas, (60, 60, 70) if is_hover_no else (40, 40, 50), no_rect, border_radius=4)
+                pygame.draw.rect(canvas, (100, 100, 120), no_rect, 2, border_radius=4)
+                txt_no = font_small.render("CANCEL", False, COL_TEXT)
+                canvas.blit(txt_no, txt_no.get_rect(center=no_rect.center))
 
         # Scale and Draw to Window
         window.fill((0, 0, 0)) # Letterbox bars
