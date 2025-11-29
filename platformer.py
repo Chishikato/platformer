@@ -1550,6 +1550,7 @@ class LevelManager:
         self.obstacles = []
         self.orbs = []
         self.dropped_credits = [] 
+        # Create initial floor
         self._add_segment(0, VIRTUAL_W, PLATFORM_HEIGHT)
         self.generated_top_y = PLATFORM_HEIGHT
         self.gen_count = 0
@@ -1562,15 +1563,17 @@ class LevelManager:
     def get_collision_tiles(self, rect):
         res = []
         for s in self.platform_segments:
+            # Simple broad-phase check for performance
             if s.right < rect.left - 4 or s.left > rect.right + 4: continue
+            if s.bottom < rect.top - 4 or s.top > rect.bottom + 4: continue
             res.append(s)
         return res
 
     def _generate_layer(self):
-        # Reduced vertical gap (was 60-100, now 60-90) to ensure jumpability
-        gap = self.rng.randint(60, 90)
+        gap = self.rng.randint(65, 95)
         new_y = self.generated_top_y - gap
         self.gen_count += 1
+
         spawn_enemy = False
         if self.gen_count > 5:
             self.enemy_timer += 1
@@ -1578,28 +1581,47 @@ class LevelManager:
                 spawn_enemy = True
                 self.enemy_timer = 0
         
+        min_passage_width = TILE_SIZE * 4  # ~80px wide gap minimum
+        passage_start = self.rng.randint(0, VIRTUAL_W - min_passage_width)
+        passage_rect = pygame.Rect(passage_start, new_y, min_passage_width, TILE_SIZE)
+
         num_plats = self.rng.randint(2, 4)
+        layer_plats = []
         enemy_spawned = False
         
-        # Track platforms generated in this layer to enforce safety rules
-        layer_plats = []
-        
-        # 1. Generate Platforms
-        for _ in range(num_plats):
-            plat_w = TILE_SIZE * self.rng.randint(4, 8)
-            px = self.rng.randint(0, VIRTUAL_W - plat_w)
-            overlap = False
-            r_new = pygame.Rect(px, new_y, plat_w, TILE_SIZE)
-            for s in self.platform_segments:
-                if s.y == new_y and r_new.colliderect(s): overlap = True
-            
-            if not overlap:
-                self._add_segment(px, plat_w, new_y)
-                layer_plats.append({'x': px, 'w': plat_w, 'y': new_y})
+        attempts = 0
+        max_attempts = 20
 
-        # 2. Populate Hazards (Ensuring one safe platform)
+        while len(layer_plats) < num_plats and attempts < max_attempts:
+            attempts += 1
+            
+            plat_w = TILE_SIZE * self.rng.randint(4, 9)
+            px = self.rng.randint(0, VIRTUAL_W - plat_w)
+            
+            # The candidate platform rectangle
+            r_new = pygame.Rect(px, new_y, plat_w, TILE_SIZE)
+
+            
+            if r_new.colliderect(passage_rect):
+                continue
+
+            min_squeeze_gap = int(TILE_SIZE * 2.5) 
+            check_rect = r_new.inflate(min_squeeze_gap, 0)
+            
+            overlap = False
+            for existing in layer_plats:
+                e_rect = pygame.Rect(existing['x'], existing['y'], existing['w'], TILE_SIZE)
+                if check_rect.colliderect(e_rect):
+                    overlap = True
+                    break
+            
+            if overlap:
+                continue
+
+            self._add_segment(px, plat_w, new_y)
+            layer_plats.append({'x': px, 'w': plat_w, 'y': new_y})
+
         if layer_plats:
-            # Pick one random platform to be ABSOLUTELY SAFE (no spikes, no enemies)
             safe_index = self.rng.randint(0, len(layer_plats) - 1)
             
             for i, plat in enumerate(layer_plats):
@@ -1607,27 +1629,30 @@ class LevelManager:
                 px, plat_w = plat['x'], plat['w']
                 
                 # Spikes: Only if NOT safe platform
-                if not is_safe_plat and self.rng.random() < 0.2:
+                if not is_safe_plat and self.rng.random() < 0.25:
                     # Randomize spike position (leave space on edges)
-                    spike_x_offset = self.rng.randint(0, (plat_w // TILE_SIZE) - 1) * TILE_SIZE
-                    self.obstacles.append(pygame.Rect(px + spike_x_offset, new_y - TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                    spike_slots = (plat_w // TILE_SIZE) - 2
+                    if spike_slots > 0:
+                        spike_x_offset = self.rng.randint(1, spike_slots) * TILE_SIZE
+                        self.obstacles.append(pygame.Rect(px + spike_x_offset, new_y - TILE_SIZE, TILE_SIZE, TILE_SIZE))
                 
                 # Orbs: Can appear anywhere
-                if self.rng.random() < 0.6:
+                if self.rng.random() < 0.5:
                     orb_size = TILE_SIZE // 2
                     ox = px + plat_w // 2 - orb_size // 2
                     self.orbs.append(pygame.Rect(ox, new_y - 2 * TILE_SIZE, orb_size, orb_size))
                 
                 # Enemies: Only if NOT safe platform
                 if spawn_enemy and not enemy_spawned and not is_safe_plat:
-                    if self.rng.random() < 0.7:
+                    if self.rng.random() < 0.6:
+                        # Center enemy
                         ex = px + plat_w // 2 - self.enemy_sprite.get_width() // 2
                         ey = new_y - self.enemy_sprite.get_height()
                         self.enemies.append(Enemy(self.enemy_sprite, ex, ey))
                         enemy_spawned = True
 
         self.generated_top_y = new_y
-    
+
     def spawn_credit(self, x, y, value):
         self.dropped_credits.append(Credit(x, y, value))
 
