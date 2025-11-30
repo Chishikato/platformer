@@ -1345,7 +1345,7 @@ class Player:
             return
         
         self.hp -= amount
-        self.invul_timer = 1.5
+        self.invul_timer = 0.7
         self.current_action = "hit" 
         
         if self.hp <= 0:
@@ -2404,46 +2404,81 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
         level.draw(target_surf, cam_x_now, cam_y_now)
         for p in particles: p.draw(target_surf, cam_x_now, cam_y_now)
 
-        if use_p1: p1.draw(target_surf, cam_x_now, cam_y_now)
-        if use_p2: p2.draw(target_surf, cam_x_now, cam_y_now)
+        def draw_floating_cd(pl):
+            # Only draw if cooldown is active
+            if pl.slam_cooldown > 0:
+                # Position relative to camera
+                sx = pl.x - cam_x_now
+                sy = pl.y - cam_y_now
+                
+                # Draw just above the player
+                bar_w = pl.w
+                bar_h = 4
+                bar_y = sy - 8 
+                
+                # Background (Black)
+                pygame.draw.rect(target_surf, (0,0,0), (sx, bar_y, bar_w, bar_h))
+                
+                # Foreground (White/Silver shrinking bar)
+                ratio = pl.slam_cooldown / pl.slam_cd_val
+                fill_w = int(bar_w * ratio)
+                pygame.draw.rect(target_surf, (200, 200, 200), (sx, bar_y, fill_w, bar_h))
+
+        if use_p1: 
+            p1.draw(target_surf, cam_x_now, cam_y_now)
+            draw_floating_cd(p1)
+
+        if use_p2: 
+            p2.draw(target_surf, cam_x_now, cam_y_now)
+            draw_floating_cd(p2)
+
         for ft in floating_texts: ft.draw(target_surf, cam_x_now, cam_y_now)
 
         p1_total = int(p1_distance + p1_orbs * 100)
         p2_total = int(p2_distance + p2_orbs * 100)
         
-        # HUD Panel
-        draw_panel(target_surf, pygame.Rect(5, 5, 150, 50), color=(0, 0, 0, 100))
+        # HUD Panel (Top Left Stats)
+        draw_panel(target_surf, pygame.Rect(5, 5, 120, 50), color=(0, 0, 0, 100))
         target_surf.blit(font_small.render(f"HEIGHT: {int(distance)}m", False, COL_TEXT), (10, 10))
         target_surf.blit(font_small.render(f"TIME: {int(elapsed)}s", False, COL_TEXT), (10, 28))
         
         hud_y = 65
+        
         def draw_player_hud(pl, name, y_pos, is_highlighted):
             panel_col = (30, 30, 50) if is_highlighted else (10, 10, 20)
-            draw_panel(target_surf, pygame.Rect(5, y_pos, 150, 20), color=panel_col)
+            draw_panel(target_surf, pygame.Rect(5, y_pos, 150, 24), color=panel_col)
+            target_surf.blit(font_small.render(name, False, COL_TEXT), (10, y_pos+4))
+
+            # Segmented HP Bar
+            bar_x = 40
+            bar_y = y_pos + 6
+            total_bar_w = 100
+            bar_h = 10
+            pygame.draw.rect(target_surf, (40, 40, 40), (bar_x, bar_y, total_bar_w, bar_h))
             
-            hp_col = (255, 50, 50) if pl.hp < 2 else (50, 255, 50)
-            target_surf.blit(font_small.render(f"{name} HP {pl.hp}", False, hp_col), (10, y_pos+2))
-            # Moved PTS slightly right (80 -> 90) to avoid overlap with long HP numbers
-            target_surf.blit(font_small.render(f"PTS {p1_total if pl == p1 else p2_total}", False, COL_ACCENT_3), (90, y_pos+2))
+            hp_col = (255, 50, 50) if pl.hp <= 1 else (50, 255, 50)
+            seg_w = (total_bar_w / pl.max_hp) if pl.max_hp > 0 else total_bar_w
+
+            for i in range(pl.hp):
+                rect_x = bar_x + (i * seg_w)
+                rect_w = seg_w - 1 if (i < pl.max_hp - 1) else seg_w
+                if rect_w > 0:
+                    pygame.draw.rect(target_surf, hp_col, (rect_x, bar_y, rect_w, bar_h))
+
+            # PTS (Top Right)
+            score_val = p1_total if pl == p1 else p2_total
+            score_str = f"PTS {score_val}"
+            score_surf = font_small.render(score_str, False, COL_ACCENT_3)
+            score_x = target_surf.get_width() - score_surf.get_width() - 15
+            score_bg_rect = pygame.Rect(score_x - 5, y_pos, score_surf.get_width() + 10, 24)
+            draw_panel(target_surf, score_bg_rect, color=(0, 0, 0, 150))
+            target_surf.blit(score_surf, (score_x, y_pos + 4))
 
         if use_p1:
             draw_player_hud(p1, "P1", hud_y, highlight_player == 1)
-            hud_y += 25
+            hud_y += 30 
         if use_p2:
             draw_player_hud(p2, "P2", hud_y, highlight_player == 2)
-
-        def draw_slam_bar(px, py, pl):
-            cd = pl.slam_cooldown
-            width = 100
-            pygame.draw.rect(target_surf, (40, 40, 40), (px, py, width, 6))
-            if cd <= 0:
-                pygame.draw.rect(target_surf, COL_ACCENT_1, (px, py, width, 6))
-            else:
-                ratio = 1.0 - (cd / pl.slam_cd_val)
-                pygame.draw.rect(target_surf, (100, 100, 100), (px, py, width * ratio, 6))
-
-        pl_to_show = p1 if (highlight_player==1 and use_p1) else (p2 if (highlight_player==2 and use_p2) else local_player)
-        draw_slam_bar(5, VIRTUAL_H - 15, pl_to_show)
 
     while running:
         # CLAMP DT to prevent physics explosions on first frame or lag spikes
