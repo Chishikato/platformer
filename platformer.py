@@ -20,9 +20,9 @@ START_FPS = 60
 # COLORS (Synthwave/Retro Palette)
 COL_BG = (20, 20, 35)
 COL_GRID = (40, 40, 60)
-COL_ACCENT_1 = (0, 234, 255)       # Cyan
-COL_ACCENT_2 = (255, 0, 85)        # Hot Pink
-COL_ACCENT_3 = (255, 215, 0)       # Gold
+COL_ACCENT_1 = (0, 234, 255)        # Cyan
+COL_ACCENT_2 = (255, 0, 85)         # Hot Pink
+COL_ACCENT_3 = (255, 215, 0)        # Gold
 COL_TEXT = (240, 240, 255)
 COL_UI_BG = (15, 15, 25)
 COL_UI_BORDER = (60, 60, 90)
@@ -33,19 +33,25 @@ BASE_GRAVITY = 1400.0
 BASE_JUMP_VEL = -550.0
 BASE_PLAYER_SPEED = 220.0
 WALL_SLIDE_SPEED = 50.0 
-WALL_JUMP_X = 250.0        
-WALL_JUMP_Y = -450.0       
+WALL_JUMP_X = 250.0         
+WALL_JUMP_Y = -450.0        
 
-SCROLL_BASE = 200.0        
-SCROLL_MAX = 450.0
+# Horizontal Scroll Constants
+SCROLL_OFFSET_X = 200.0      
 
 BASE_SLAM_SPEED = 900.0                 
-BASE_SLAM_COOLDOWN = 1.0               
-SLAM_BASE_RADIUS = 40.0        
-SLAM_RADIUS_PER_HEIGHT = 0.25  
+BASE_SLAM_COOLDOWN = 1.0                
+SLAM_BASE_RADIUS = 40.0         
+SLAM_RADIUS_PER_HEIGHT = 0.25   
 
 TILE_SIZE = 20 
-PLATFORM_HEIGHT = VIRTUAL_H - 3 * TILE_SIZE
+# Ground level for horizontal play
+GROUND_LEVEL = VIRTUAL_H - 2 * TILE_SIZE
+
+# Stage configurations (Distance in pixels)
+STAGE_1_END = 4000
+STAGE_2_END = 9000
+# Stage 3 is Endless (anything > STAGE_2_END)
 
 # Path helpers
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -96,7 +102,7 @@ def lerp(start, end, t):
     return start + t * (end - start)
 
 def draw_text_shadow(surf, font, text, x, y, col=COL_TEXT, shadow_col=COL_SHADOW,
-                     center=False, pulse=False, time_val=0):
+                      center=False, pulse=False, time_val=0):
     offset_y = 0
 
     if pulse:
@@ -209,7 +215,7 @@ def load_save_data():
                     data["credits"] = float(saved["coins"])
                 else:
                     data["credits"] = float(saved.get("credits", 0))
-                   
+                    
                 if "upgrades" in saved:
                     for k in data["upgrades"]:
                         data["upgrades"][k] = saved["upgrades"].get(k, 0)
@@ -427,19 +433,30 @@ def spawn_credit_text(x, y, amount, font):
     col = COL_ACCENT_3 if amount >= 1 else (200, 200, 200)
     floating_texts.append(FloatingText(x, y, txt, font, col))
 
-def draw_gradient_background(surf, height_score):
-    factor = clamp(height_score / 5000.0, 0.0, 1.0)
-    top_color = (int(10 + 20 * factor), int(10 + 40 * factor), int(30 + 80 * factor))
-    bottom_color = (20, 10, 35)
+def draw_gradient_background(surf, stage):
+    # Determine colors based on stage
+    if stage == 1:
+        # Night / Blue
+        top_color = (10, 10, 30)
+        bottom_color = (40, 20, 60)
+    elif stage == 2:
+        # Sunset / Purple-Orange
+        top_color = (60, 30, 80)
+        bottom_color = (180, 80, 60)
+    else:
+        # Endless / Red-Matrix
+        top_color = (20, 0, 0)
+        bottom_color = (60, 10, 20)
+
     h = surf.get_height()
     w = surf.get_width()
     steps = 20
     step_h = math.ceil(h / steps)
     for i in range(steps):
         t = i / steps
-        r = int(bottom_color[0] + (top_color[0] - bottom_color[0]) * (1-t))
-        g = int(bottom_color[1] + (top_color[1] - bottom_color[1]) * (1-t))
-        b = int(bottom_color[2] + (top_color[2] - bottom_color[2]) * (1-t))
+        r = int(top_color[0] + (bottom_color[0] - top_color[0]) * t)
+        g = int(top_color[1] + (bottom_color[1] - top_color[1]) * t)
+        b = int(top_color[2] + (bottom_color[2] - top_color[2]) * t)
         pygame.draw.rect(surf, (r, g, b), (0, i * step_h, w, step_h))
 
 # =========================
@@ -1464,7 +1481,9 @@ class Enemy:
         
         my_rect = self.rect()
         if not my_rect.colliderect(cam_rect):
+            # Clean up if fell off screen or way behind
             if self.y > cam_rect.bottom + 500: self.alive = False
+            if self.x < cam_rect.left - 200: self.alive = False
             return False
 
         for obs in level.obstacles:
@@ -1550,9 +1569,15 @@ class LevelManager:
         self.obstacles = []
         self.orbs = []
         self.dropped_credits = [] 
-        # Create initial floor
-        self._add_segment(0, VIRTUAL_W, PLATFORM_HEIGHT)
-        self.generated_top_y = PLATFORM_HEIGHT
+        
+        # Start Generation at X=0
+        self.generated_right_x = 0
+        self.current_stage = 1
+        
+        # Create initial safety platform
+        self._add_segment(0, 800, GROUND_LEVEL)
+        self.generated_right_x = 800
+        
         self.gen_count = 0
         self.enemy_timer = 0
         self.orb_timer = 0.0
@@ -1569,105 +1594,95 @@ class LevelManager:
             res.append(s)
         return res
 
-    def _generate_layer(self):
-        gap = self.rng.randint(65, 95)
-        new_y = self.generated_top_y - gap
+    def _generate_section(self):
+        # Determine Stage based on distance
+        if self.generated_right_x < STAGE_1_END:
+            self.current_stage = 1
+        elif self.generated_right_x < STAGE_2_END:
+            self.current_stage = 2
+        else:
+            self.current_stage = 3 # Endless
+
+        # --- HORIZONTAL GENERATION LOGIC ---
+        
+        # Gap size varies by stage
+        min_gap = 50
+        max_gap = 100
+        if self.current_stage == 2: max_gap = 140
+        if self.current_stage == 3: max_gap = 180
+
+        gap = self.rng.randint(min_gap, max_gap)
+        new_x = self.generated_right_x + gap
+        
+        # Platform Height (Y) Logic
+        # Stage 1: Mostly ground level, some variation
+        # Stage 2: Higher platforms, "Sky" theme
+        # Stage 3: Chaos
+        
+        base_y = GROUND_LEVEL
+        
+        if self.current_stage == 1:
+            y_variance = self.rng.choice([0, 0, -TILE_SIZE*2, -TILE_SIZE*4])
+            plat_y = base_y + y_variance
+        elif self.current_stage == 2:
+            # Higher up
+            plat_y = base_y - self.rng.randint(2, 8) * TILE_SIZE
+        else:
+            # Endless random
+            plat_y = base_y - self.rng.randint(0, 10) * TILE_SIZE
+
+        # Platform Width
+        plat_w = TILE_SIZE * self.rng.randint(4, 12)
+        
+        self._add_segment(new_x, plat_w, plat_y)
+        self.generated_right_x = new_x + plat_w
         self.gen_count += 1
 
-        spawn_enemy = False
-        if self.gen_count > 5:
-            self.enemy_timer += 1
-            if self.enemy_timer >= self.rng.randint(3, 5):
-                spawn_enemy = True
-                self.enemy_timer = 0
+        # Spikes / Enemies / Orbs
+        safe_zone = 0.2 # First 20% of platform is safe
         
-        min_passage_width = TILE_SIZE * 4  # ~80px wide gap minimum
-        passage_start = self.rng.randint(0, VIRTUAL_W - min_passage_width)
-        passage_rect = pygame.Rect(passage_start, new_y, min_passage_width, TILE_SIZE)
-
-        num_plats = self.rng.randint(2, 4)
-        layer_plats = []
-        enemy_spawned = False
+        # Enemy Spawn Chance
+        enemy_chance = 0.3
+        if self.current_stage == 2: enemy_chance = 0.5
+        if self.current_stage == 3: enemy_chance = 0.7
         
-        attempts = 0
-        max_attempts = 20
+        if self.rng.random() < enemy_chance and plat_w > TILE_SIZE * 5:
+            ex = new_x + plat_w // 2 - self.enemy_sprite.get_width() // 2
+            ey = plat_y - self.enemy_sprite.get_height()
+            self.enemies.append(Enemy(self.enemy_sprite, ex, ey))
+        
+        # Spike Chance
+        if self.rng.random() < 0.25 and self.current_stage > 1:
+            spike_x = new_x + self.rng.randint(2, (plat_w // TILE_SIZE) - 2) * TILE_SIZE
+            self.obstacles.append(pygame.Rect(spike_x, plat_y - TILE_SIZE, TILE_SIZE, TILE_SIZE))
 
-        while len(layer_plats) < num_plats and attempts < max_attempts:
-            attempts += 1
-            
-            plat_w = TILE_SIZE * self.rng.randint(4, 9)
-            px = self.rng.randint(0, VIRTUAL_W - plat_w)
-            
-            # The candidate platform rectangle
-            r_new = pygame.Rect(px, new_y, plat_w, TILE_SIZE)
-
-            
-            if r_new.colliderect(passage_rect):
-                continue
-
-            min_squeeze_gap = int(TILE_SIZE * 2.5) 
-            check_rect = r_new.inflate(min_squeeze_gap, 0)
-            
-            overlap = False
-            for existing in layer_plats:
-                e_rect = pygame.Rect(existing['x'], existing['y'], existing['w'], TILE_SIZE)
-                if check_rect.colliderect(e_rect):
-                    overlap = True
-                    break
-            
-            if overlap:
-                continue
-
-            self._add_segment(px, plat_w, new_y)
-            layer_plats.append({'x': px, 'w': plat_w, 'y': new_y})
-
-        if layer_plats:
-            safe_index = self.rng.randint(0, len(layer_plats) - 1)
-            
-            for i, plat in enumerate(layer_plats):
-                is_safe_plat = (i == safe_index)
-                px, plat_w = plat['x'], plat['w']
-                
-                # Spikes: Only if NOT safe platform
-                if not is_safe_plat and self.rng.random() < 0.25:
-                    # Randomize spike position (leave space on edges)
-                    spike_slots = (plat_w // TILE_SIZE) - 2
-                    if spike_slots > 0:
-                        spike_x_offset = self.rng.randint(1, spike_slots) * TILE_SIZE
-                        self.obstacles.append(pygame.Rect(px + spike_x_offset, new_y - TILE_SIZE, TILE_SIZE, TILE_SIZE))
-                
-                # Orbs: Can appear anywhere
-                if self.rng.random() < 0.5:
-                    orb_size = TILE_SIZE // 2
-                    ox = px + plat_w // 2 - orb_size // 2
-                    self.orbs.append(pygame.Rect(ox, new_y - 2 * TILE_SIZE, orb_size, orb_size))
-                
-                # Enemies: Only if NOT safe platform
-                if spawn_enemy and not enemy_spawned and not is_safe_plat:
-                    if self.rng.random() < 0.6:
-                        # Center enemy
-                        ex = px + plat_w // 2 - self.enemy_sprite.get_width() // 2
-                        ey = new_y - self.enemy_sprite.get_height()
-                        self.enemies.append(Enemy(self.enemy_sprite, ex, ey))
-                        enemy_spawned = True
-
-        self.generated_top_y = new_y
+        # Orb Chance
+        if self.rng.random() < 0.5:
+             orb_size = TILE_SIZE // 2
+             ox = new_x + plat_w // 2 - orb_size // 2
+             self.orbs.append(pygame.Rect(ox, plat_y - 3 * TILE_SIZE, orb_size, orb_size))
 
     def spawn_credit(self, x, y, value):
         self.dropped_credits.append(Credit(x, y, value))
 
-    def update(self, dt, cam_y, difficulty):
+    def update(self, dt, cam_x, difficulty):
         self.orb_timer += dt
-        target_top = cam_y - 400
-        while self.generated_top_y > target_top: self._generate_layer()
-        max_y = cam_y + VIRTUAL_H + 200
-        self.platform_segments = [s for s in self.platform_segments if s.top < max_y]
-        self.obstacles = [o for o in self.obstacles if o.top < max_y]
-        self.orbs = [o for o in self.orbs if o.top < max_y]
-        self.enemies = [e for e in self.enemies if e.alive and e.y < max_y]
+        
+        # Generate ahead of camera (Right side)
+        target_right = cam_x + VIRTUAL_W + 400
+        while self.generated_right_x < target_right:
+            self._generate_section()
+            
+        # Cleanup behind camera (Left side)
+        cleanup_x = cam_x - 200
+        
+        self.platform_segments = [s for s in self.platform_segments if s.right > cleanup_x]
+        self.obstacles = [o for o in self.obstacles if o.right > cleanup_x]
+        self.orbs = [o for o in self.orbs if o.right > cleanup_x]
+        self.enemies = [e for e in self.enemies if e.alive and e.x > cleanup_x]
         
         for c in self.dropped_credits: c.update(dt, self)
-        self.dropped_credits = [c for c in self.dropped_credits if c.life > 0 and c.y < max_y]
+        self.dropped_credits = [c for c in self.dropped_credits if c.life > 0 and c.x > cleanup_x]
 
     def update_enemies(self, dt, players, cam_rect):
         spike_deaths = []
@@ -2350,7 +2365,9 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
     particles.clear()
     floating_texts.clear()
     
-    spawn_y = PLATFORM_HEIGHT - 60
+    # Start on the left, on ground level
+    spawn_x = 100
+    spawn_y = GROUND_LEVEL - 60
     
     stats_p1 = local_stats if (net_role != ROLE_CLIENT) else None 
     stats_p2 = local_stats if (net_role != ROLE_HOST) else None
@@ -2359,9 +2376,9 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
         stats_p2 = local_stats
 
     # Pass sprites to Player Constructor
-    p1 = Player(COL_ACCENT_1, 100, spawn_y, stats_p1, sprite_dict=player1_sprites)
-    p2 = Player(COL_ACCENT_2, 140, spawn_y, stats_p2, sprite_dict=player2_sprites)
-    base_y = spawn_y
+    p1 = Player(COL_ACCENT_1, spawn_x, spawn_y, stats_p1, sprite_dict=player1_sprites)
+    p2 = Player(COL_ACCENT_2, spawn_x - 30, spawn_y, stats_p2, sprite_dict=player2_sprites)
+    base_x = spawn_x
 
     if net_role == ROLE_CLIENT: local_player, remote_player = p2, p1
     else: local_player, remote_player = p1, p2
@@ -2371,8 +2388,9 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
     use_p1 = True
     use_p2 = (mode != MODE_SINGLE)
 
-    cam_x = p1.x - VIRTUAL_W / 2
-    cam_y = p1.y - VIRTUAL_H / 2
+    # Initial Camera Setup
+    cam_x = p1.x - 200 # Offset so player is on left side
+    cam_y = 0
     cam_x_p1, cam_x_p2 = cam_x, cam_x
     cam_y_p1, cam_y_p2 = cam_y, cam_y
     
@@ -2390,11 +2408,11 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
     waiting_for_seed = (net_role == ROLE_CLIENT)
 
     def render_scene(target_surf, cam_x_now, cam_y_now, highlight_player=None):
-        # Use Parallax Background
+        # Use Parallax Background logic (horizontal scroll)
         if bg_obj:
             bg_obj.draw(target_surf, cam_x_now)
         else:
-            draw_gradient_background(target_surf, distance)
+            draw_gradient_background(target_surf, level.current_stage)
         
         if waiting_for_seed:
             txt = font_med.render("SYNCING MAP DATA...", False, COL_ACCENT_1)
@@ -2434,13 +2452,13 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
 
         for ft in floating_texts: ft.draw(target_surf, cam_x_now, cam_y_now)
 
-        p1_total = int(p1_distance + p1_orbs * 100)
-        p2_total = int(p2_distance + p2_orbs * 100)
+        p1_total = int(p1_distance / 10 + p1_orbs * 100)
+        p2_total = int(p2_distance / 10 + p2_orbs * 100)
         
         # HUD Panel (Top Left Stats)
         draw_panel(target_surf, pygame.Rect(5, 5, 120, 50), color=(0, 0, 0, 100))
-        target_surf.blit(font_small.render(f"HEIGHT: {int(distance)}m", False, COL_TEXT), (10, 10))
-        target_surf.blit(font_small.render(f"TIME: {int(elapsed)}s", False, COL_TEXT), (10, 28))
+        target_surf.blit(font_small.render(f"DIST: {int(distance/10)}m", False, COL_TEXT), (10, 10))
+        target_surf.blit(font_small.render(f"STAGE: {level.current_stage}", False, COL_TEXT), (10, 28))
         
         hud_y = 65
         
@@ -2512,7 +2530,8 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
 
         if not game_over:
             if net_role != ROLE_LOCAL_ONLY:
-                lt = int(p1_distance + p1_orbs * 100) if local_player is p1 else int(p2_distance + p2_orbs * 100)
+                # Use Horizontal Distance for score sync
+                lt = int(p1_distance/10 + p1_orbs * 100) if local_player is p1 else int(p2_distance/10 + p2_orbs * 100)
                 send_seed = game_seed if net_role == ROLE_HOST else 0
                 network.send_local_state(local_player.x, local_player.y, local_player.alive, lt, send_seed, local_player.hp)
                 network.poll_remote_state()
@@ -2526,17 +2545,56 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
 
             if not waiting_for_seed:
                 distance = max(distance, p1_distance, p2_distance)
-                difficulty = clamp(distance / 2000.0, 0.0, 1.0)
+                difficulty = clamp(distance / 5000.0, 0.0, 1.0) # Adjusted for horizontal scale
+                
+                # --- UPDATE PLAYERS ---
                 if mode == MODE_SINGLE or net_role != ROLE_LOCAL_ONLY:
                     local_player.update(dt, level, keys[pygame.K_LEFT] or keys[pygame.K_a], keys[pygame.K_RIGHT] or keys[pygame.K_d], keys[pygame.K_SPACE] or keys[pygame.K_UP] or keys[pygame.K_w], keys[pygame.K_LSHIFT] or keys[pygame.K_s] or keys[pygame.K_DOWN])
                 else:
                     if p1_local and use_p1: p1.update(dt, level, keys[pygame.K_a], keys[pygame.K_d], keys[pygame.K_w] or keys[pygame.K_SPACE], keys[pygame.K_LSHIFT] or keys[pygame.K_s])
                     if p2_local and use_p2: p2.update(dt, level, keys[pygame.K_j], keys[pygame.K_l], keys[pygame.K_i], keys[pygame.K_RSHIFT] or keys[pygame.K_k])
 
+                # --- CAMERA UPDATE (HORIZONTAL) ---
+                if mode == MODE_VERSUS and net_role == ROLE_LOCAL_ONLY and use_p1 and use_p2:
+                    # Split screen cam logic
+                    tx1 = p1.x if p1.alive else (p2.x if p2.alive else p1.x)
+                    tx2 = p2.x if p2.alive else (p1.x if p1.alive else p2.x)
+                    # Keep Y roughly constant or follow loosely
+                    ty1 = min(max(0, p1.y - 200), VIRTUAL_H - 200)
+                    ty2 = min(max(0, p2.y - 200), VIRTUAL_H - 200)
+
+                    cam_x_p1 += ((tx1 - 200) - cam_x_p1) * 0.1
+                    cam_x_p2 += ((tx2 - 200) - cam_x_p2) * 0.1
+                    # Lock Y mostly
+                    cam_y_p1 = 0 
+                    cam_y_p2 = 0
+                else:
+                    # Single/Network Cam
+                    if mode == MODE_SINGLE: b_x = local_player.x
+                    elif net_role != ROLE_LOCAL_ONLY:
+                        if local_player.alive: b_x = local_player.x
+                        elif remote_player.alive: b_x = remote_player.x
+                        else: b_x = local_player.x
+                    else:
+                        if p1.alive and p2.alive: b_x = max(p1.x, p2.x)
+                        elif p1.alive: b_x = p1.x
+                        elif p2.alive: b_x = p2.x
+                        else: b_x = p1.x
+                    
+                    cam_x += ((b_x - 200) - cam_x) * 0.1
+                    cam_y = 0 # Lock Y axis for horizontal feel, or clamp it
+                
+                # --- UPDATE LEVEL ---
                 cam_rect = pygame.Rect(int(cam_x), int(cam_y), VIRTUAL_W, VIRTUAL_H)
+                level.update(dt, cam_x, difficulty)
+                
                 spike_deaths = level.update_enemies(dt, [p for p in [p1, p2] if (use_p1 if p==p1 else use_p2)], cam_rect)
                 for dx, dy in spike_deaths: level.spawn_credit(dx, dy, 0.5)
                 
+                # Update Distance Score
+                if use_p1 and p1.alive and (net_role in (ROLE_LOCAL_ONLY, ROLE_HOST)): p1_distance = max(p1_distance, p1.x - base_x)
+                if use_p2 and p2.alive and (net_role in (ROLE_LOCAL_ONLY, ROLE_CLIENT)): p2_distance = max(p2_distance, p2.x - base_x)
+
                 players_to_check = []
                 if net_role == ROLE_LOCAL_ONLY:
                     if use_p1 and p1.alive: players_to_check.append(p1)
@@ -2552,35 +2610,6 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                             spawn_credit_text(credit.x, credit.y, credit.value, font_small)
                             if credit in level.dropped_credits: level.dropped_credits.remove(credit)
                             break
-
-                if mode == MODE_VERSUS and net_role == ROLE_LOCAL_ONLY and use_p1 and use_p2:
-                    tx1 = p1.x if p1.alive else (p2.x if p2.alive else p1.x)
-                    tx2 = p2.x if p2.alive else (p1.x if p1.alive else p2.x)
-                    ty1 = p1.y if p1.alive else (p2.y if p2.alive else p1.y)
-                    ty2 = p2.y if p2.alive else (p1.y if p1.alive else p2.y)
-                    cam_x_p1 += ((tx1 - VIRTUAL_W / 4) - cam_x_p1) * 0.1
-                    cam_x_p2 += ((tx2 - VIRTUAL_W / 4) - cam_x_p2) * 0.1
-                    cam_y_p1 += ((ty1 - VIRTUAL_H / 2) - cam_y_p1) * 0.1
-                    cam_y_p2 += ((ty2 - VIRTUAL_H / 2) - cam_y_p2) * 0.1
-                    cam_x = max(cam_x_p1, cam_x_p2) 
-                    cam_y = min(cam_y_p1, cam_y_p2) 
-                else:
-                    if mode == MODE_SINGLE: b_x, b_y = local_player.x, local_player.y
-                    elif net_role != ROLE_LOCAL_ONLY:
-                        if local_player.alive: b_x, b_y = local_player.x, local_player.y
-                        elif remote_player.alive: b_x, b_y = remote_player.x, remote_player.y
-                        else: b_x, b_y = local_player.x, local_player.y
-                    else:
-                        if p1.alive and p2.alive: b_x, b_y = p1.x, min(p1.y, p2.y)
-                        elif p1.alive: b_x, b_y = p1.x, p1.y
-                        elif p2.alive: b_x, b_y = p2.x, p2.y
-                        else: b_x, b_y = p1.x, p1.y
-                    cam_x += ((b_x - VIRTUAL_W / 2) - cam_x) * 0.1
-                    cam_y += ((b_y - VIRTUAL_H / 2) - cam_y) * 0.1
-
-                level.update(dt, cam_y, difficulty)
-                if use_p1 and p1.alive and (net_role in (ROLE_LOCAL_ONLY, ROLE_HOST)): p1_distance = max(p1_distance, base_y - p1.y)
-                if use_p2 and p2.alive and (net_role in (ROLE_LOCAL_ONLY, ROLE_CLIENT)): p2_distance = max(p2_distance, base_y - p2.y)
 
                 for orb in level.orbs[:]:
                     if use_p1 and p1.alive and p1.rect().colliderect(orb): p1_orbs += 1; level.orbs.remove(orb); continue
@@ -2602,7 +2631,9 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
 
                 def handle_collisions_for_player(player):
                     if not player.alive or player.is_dying: return
-                    if player.y > cam_y + VIRTUAL_H + 50: player.alive = False; return
+                    # Death by falling (Horizontal logic: Y > VIRTUAL_H + offset)
+                    if player.y > VIRTUAL_H + 200: player.take_damage(999); return
+                    
                     r = player.rect()
                     for obs in level.obstacles: 
                         if r.colliderect(obs): player.take_damage(100); return
@@ -2630,8 +2661,8 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 if use_p2: resolve_slam(p2)
                 level.enemies = [e for e in level.enemies if e.alive]
 
-                p1_total = int(p1_distance + p1_orbs * 100)
-                p2_total = int(p2_distance + p2_orbs * 100)
+                p1_total = int(p1_distance/10 + p1_orbs * 100)
+                p2_total = int(p2_distance/10 + p2_orbs * 100)
                 
                 def finish(name, score, txt):
                     nonlocal game_over, winner_text
