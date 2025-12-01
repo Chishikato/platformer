@@ -1642,23 +1642,25 @@ class Enemy:
             pygame.draw.rect(surf, (255, 0, 0), (draw_x, draw_y - 6, bar_w * hp_pct, bar_h))
 
 class LevelManager:
-    # UPDATED: Renamed enemy_sprite to enemy_sprite_dict in arguments
     def __init__(self, tile_surface, enemy_sprite_dict, seed):
         self.rng = random.Random(seed)
         self.tile_surf = tile_surface
-        self.enemy_sprites = enemy_sprite_dict # Store the dict
+        self.enemy_sprites = enemy_sprite_dict
         self.platform_segments = []
         self.enemies = []
         self.obstacles = []
         self.orbs = []
-        self.dropped_credits = [] 
+        self.dropped_credits = []
         
         # Start Generation at X=0
         self.generated_right_x = 0
         self.current_stage = 1
         
+        # Track the Y level of the last generated platform to ensure continuity
+        self.last_platform_y = GROUND_LEVEL 
+
         # Create initial safety platform
-        self._add_segment(0, 800, GROUND_LEVEL)
+        self._add_segment(0, 800, self.last_platform_y)
         self.generated_right_x = 800
         
         self.gen_count = 0
@@ -1686,50 +1688,82 @@ class LevelManager:
         else:
             self.current_stage = 3 # Endless
 
-        # --- HORIZONTAL GENERATION LOGIC ---
+        # Determine Height Change (Delta Y)
+        # Note: Negative Delta Y means going UP (screen coordinates)
+        # Max Jump Height with current physics is approx 108 pixels.
+        # We limit upward generation to 4 tiles (80px) to be safe.
         
-        # Gap size varies by stage
-        min_gap = 50
-        max_gap = 100
-        if self.current_stage == 2: max_gap = 140
-        if self.current_stage == 3: max_gap = 180
+        min_change = 0
+        max_change = 0
 
-        gap = self.rng.randint(min_gap, max_gap)
-        new_x = self.generated_right_x + gap
-        
-        # Platform Height (Y) Logic
-        # Stage 1: Mostly ground level, some variation
-        # Stage 2: Higher platforms, "Sky" theme
-        # Stage 3: Chaos
-        
-        base_y = GROUND_LEVEL
-        
         if self.current_stage == 1:
-            y_variance = self.rng.choice([0, 0, -TILE_SIZE*2, -TILE_SIZE*4])
-            plat_y = base_y + y_variance
+            # Mostly flat, slight bumps
+            min_change = -2 # Up 2 tiles
+            max_change = 2  # Down 2 tiles
         elif self.current_stage == 2:
-            # Higher up
-            plat_y = base_y - self.rng.randint(2, 8) * TILE_SIZE
+            # Verticality intro
+            min_change = -4 # Up 4 tiles (Hard jump)
+            max_change = 5  # Down 5 tiles
         else:
-            # Endless random
-            plat_y = base_y - self.rng.randint(0, 10) * TILE_SIZE
+            # Endless chaos
+            min_change = -4
+            max_change = 8  # Big drops
 
-        # Platform Width
+        delta_tiles = self.rng.randint(min_change, max_change)
+        new_y = self.last_platform_y + (delta_tiles * TILE_SIZE)
+
+        # Clamp Y to keep play area reasonable
+        # Don't go too high (0) or fall into the void (VIRTUAL_H)
+        min_allowed_y = TILE_SIZE * 4
+        max_allowed_y = VIRTUAL_H - TILE_SIZE * 2
+        
+        if new_y < min_allowed_y: 
+            new_y = min_allowed_y + TILE_SIZE # Bounce down
+        elif new_y > max_allowed_y: 
+            new_y = max_allowed_y - TILE_SIZE # Bounce up
+
+        # Determine Gap Width based on Height Change
+        # If we are going UP (new_y < last_y), the gap must be smaller
+        # If we are going DOWN (new_y > last_y), the gap can be larger
+        
+        base_gap = 60
+        gap_variance = self.rng.randint(0, 40)
+        
+        height_diff = self.last_platform_y - new_y # Positive = Going UP
+        
+        if height_diff > 0:
+            # We are jumping UP. Reduce gap significantly.
+            # For every tile up (20px), reduce gap capacity
+            penalty = (height_diff / TILE_SIZE) * 12
+            final_gap = max(40, (base_gap + gap_variance) - penalty)
+        else:
+            # We are jumping DOWN or FLAT. Increase gap.
+            bonus = (abs(height_diff) / TILE_SIZE) * 8
+            final_gap = base_gap + gap_variance + bonus
+            # Cap max gap to avoid impossible horizontal leaps (Max flat jump is ~170px)
+            final_gap = min(final_gap, 150)
+
+        final_gap = int(final_gap)
+        
+        # Calculate X position
+        new_x = self.generated_right_x + final_gap
+
         plat_w = TILE_SIZE * self.rng.randint(4, 12)
         
-        self._add_segment(new_x, plat_w, plat_y)
+        # Add the segment
+        self._add_segment(new_x, plat_w, new_y)
+        
+        # Update trackers
         self.generated_right_x = new_x + plat_w
+        self.last_platform_y = new_y # IMPORTANT: Save for next loop
         self.gen_count += 1
 
-        # Spikes / Enemies / Orbs
-        safe_zone = 0.2 # First 20% of platform is safe
         
         # Enemy Spawn Chance
         enemy_chance = 0.3
         if self.current_stage == 2: enemy_chance = 0.5
         if self.current_stage == 3: enemy_chance = 0.7
         
-        # Calculate spawn height based on the "walk" sprite size
         ref_width = 32
         ref_height = 32
         if "walk" in self.enemy_sprites and self.enemy_sprites["walk"]:
@@ -1737,21 +1771,21 @@ class LevelManager:
             ref_width = ref_surf.get_width()
             ref_height = ref_surf.get_height()
 
-        if self.rng.random() < enemy_chance and plat_w > TILE_SIZE * 5:
+        # Only spawn enemies on platforms wide enough
+        if self.rng.random() < enemy_chance and plat_w > TILE_SIZE * 6:
             ex = new_x + plat_w // 2 - ref_width // 2
-            ey = plat_y - ref_height
+            ey = new_y - ref_height
             self.enemies.append(Enemy(self.enemy_sprites, ex, ey))
         
-        # Spike Chance
-        if self.rng.random() < 0.25 and self.current_stage > 1:
-            spike_x = new_x + self.rng.randint(2, (plat_w // TILE_SIZE) - 2) * TILE_SIZE
-            self.obstacles.append(pygame.Rect(spike_x, plat_y - TILE_SIZE, TILE_SIZE, TILE_SIZE))
+        if self.rng.random() < 0.25 and self.current_stage > 1 and plat_w > TILE_SIZE * 6:
+            spike_x = new_x + self.rng.randint(3, (plat_w // TILE_SIZE) - 3) * TILE_SIZE
+            self.obstacles.append(pygame.Rect(spike_x, new_y - TILE_SIZE, TILE_SIZE, TILE_SIZE))
 
         # Orb Chance
         if self.rng.random() < 0.5:
              orb_size = TILE_SIZE // 2
              ox = new_x + plat_w // 2 - orb_size // 2
-             self.orbs.append(pygame.Rect(ox, plat_y - 3 * TILE_SIZE, orb_size, orb_size))
+             self.orbs.append(pygame.Rect(ox, new_y - 3 * TILE_SIZE, orb_size, orb_size))
 
     def spawn_credit(self, x, y, value):
         self.dropped_credits.append(Credit(x, y, value))
@@ -1784,8 +1818,11 @@ class LevelManager:
 
     def draw(self, surf, cam_x, cam_y):
         for s in self.platform_segments:
+            if s.right - cam_x < 0 or s.left - cam_x > VIRTUAL_W: continue
+            
             for x in range(s.left, s.right, TILE_SIZE):
                 surf.blit(self.tile_surf, (x - cam_x, s.top - cam_y))
+
         for o in self.obstacles:
             bx = o.x - cam_x
             by = o.y + o.h - cam_y
@@ -2665,15 +2702,13 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                     # Split screen cam logic
                     tx1 = p1.x if p1.alive else (p2.x if p2.alive else p1.x)
                     tx2 = p2.x if p2.alive else (p1.x if p1.alive else p2.x)
-                    # Keep Y roughly constant or follow loosely
-                    ty1 = min(max(0, p1.y - 200), VIRTUAL_H - 200)
-                    ty2 = min(max(0, p2.y - 200), VIRTUAL_H - 200)
-
+                    
                     cam_x_p1 += ((tx1 - 200) - cam_x_p1) * 0.1
                     cam_x_p2 += ((tx2 - 200) - cam_x_p2) * 0.1
-                    # Lock Y mostly
+                    
                     cam_y_p1 = 0 
                     cam_y_p2 = 0
+                    cam_x = max(cam_x_p1, cam_x_p2)
                 else:
                     # Single/Network Cam
                     if mode == MODE_SINGLE: b_x = local_player.x
