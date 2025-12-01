@@ -429,8 +429,8 @@ def spawn_slam_impact(x, y, power):
         particles.append(Particle(x, y, COL_ACCENT_2, vx, vy, 0.6))
 
 def spawn_credit_text(x, y, amount, font):
-    txt = f"+{amount}" if isinstance(amount, int) else f"+{amount:.1f}"
-    col = COL_ACCENT_3 if amount >= 1 else (200, 200, 200)
+    txt = f"+{amount:.1f} CREDIT"
+    col = COL_ACCENT_1 if amount >= 1 else (200, 200, 200)
     floating_texts.append(FloatingText(x, y, txt, font, col))
 
 def draw_gradient_background(surf, stage):
@@ -1003,6 +1003,7 @@ class Player:
         # Default visual size for rectangle, overridden by sprites if present
         self.w, self.h = TILE_SIZE, TILE_SIZE * 2
         self.x, self.y = x, y
+        self.last_safe_x, self.last_safe_y = x, y
         self.vx, self.vy = 0.0, 0.0
         self.on_ground = False
         self.alive = True
@@ -1017,6 +1018,8 @@ class Player:
         self.max_hp = 3 + self.stats_hp_lvl
         self.hp = self.max_hp
         self.invul_timer = 0.0
+        self.flash_on_invul = False # NEW: Controls if we flicker or not
+        self.knockback_timer = 0.0
 
         self.speed_val = BASE_PLAYER_SPEED * (1.0 + 0.05 * self.stats_speed_lvl)
         self.jump_val = BASE_JUMP_VEL * (1.0 + 0.03 * self.stats_jump_lvl)
@@ -1084,6 +1087,7 @@ class Player:
         # Centered collider
         return pygame.Rect(int(self.x), int(self.y), int(self.w), int(self.h))
 
+    # (Keep update method exactly the same as before, no changes needed there)
     def update(self, dt, level, input_left, input_right, input_jump, input_slam):
         if not self.alive: return
 
@@ -1096,6 +1100,22 @@ class Player:
                 return
             self.current_action = "die"
             if self.on_ground: self.vx = 0
+
+        # --- KNOCKBACK LOGIC (NEW) ---
+        # If being knocked back, disable control inputs and tick down timer
+        if self.knockback_timer > 0:
+            self.knockback_timer -= dt
+            input_left = False
+            input_right = False
+            input_jump = False
+            input_slam = False
+            # Apply a bit of drag to the knockback so they don't slide forever
+            if self.on_ground:
+                self.vx *= 0.9
+
+        if self.on_ground and self.knockback_timer <= 0 and not self.is_dying:
+            self.last_safe_x = self.x
+            self.last_safe_y = self.y
 
         # Standard Timers
         self.anim_timer += dt
@@ -1123,7 +1143,7 @@ class Player:
 
         # MOVEMENT PHYSICS
         desired_vx = 0.0
-        if not self.is_dying:
+        if not self.is_dying and self.knockback_timer <= 0: # Only move if not dying AND not stunned
             if input_left: 
                 desired_vx -= self.speed_val
                 self.facing_right = False
@@ -1132,13 +1152,22 @@ class Player:
                 self.facing_right = True
 
         if self.on_ground: 
-            self.vx = 0 if self.is_dying else desired_vx
+            if self.knockback_timer > 0:
+                # Friction during knockback on ground
+                self.vx = lerp(self.vx, 0, dt * 5)
+            else:
+                self.vx = 0 if self.is_dying else desired_vx
         else: 
-            self.vx += (desired_vx - self.vx) * self.AIR_CONTROL * dt * 10.0
+            # Air control
+            if self.knockback_timer > 0:
+                # Less air control during knockback
+                pass 
+            else:
+                self.vx += (desired_vx - self.vx) * self.AIR_CONTROL * dt * 10.0
 
         # Slam Logic
         can_slam = (not self.on_ground) and (not self.slam_active) and (self.slam_cooldown <= 0.0) and (not self.is_dying)
-        if input_slam and can_slam:
+        if input_slam and can_slam and self.knockback_timer <= 0:
             self.slam_active = True
             self.slam_start_y = self.y
             self.vy = BASE_SLAM_SPEED
@@ -1146,7 +1175,7 @@ class Player:
 
         # Gravity & Wall Logic
         self.vy += BASE_GRAVITY * dt
-        if self.on_wall and not self.on_ground and self.vy > 0 and not self.slam_active and not self.is_dying:
+        if self.on_wall and not self.on_ground and self.vy > 0 and not self.slam_active and not self.is_dying and self.knockback_timer <= 0:
             if self.vy > WALL_SLIDE_SPEED:
                 self.vy = WALL_SLIDE_SPEED
                 if random.random() < 0.2:
@@ -1154,18 +1183,18 @@ class Player:
                     spawn_dust(self.x + offset_x, self.y + self.h, 1)
 
         # Variable jump height
-        if (not input_jump) and (self.vy < 0) and (not self.slam_active):
+        if (not input_jump) and (self.vy < 0) and (not self.slam_active) and self.knockback_timer <= 0:
             self.vy += BASE_GRAVITY * dt * 0.6
 
         # Jumps
-        if (not self.slam_active) and self.jump_buffer_timer > 0.0 and self.coyote_timer > 0.0 and not self.is_dying:
+        if (not self.slam_active) and self.jump_buffer_timer > 0.0 and self.coyote_timer > 0.0 and not self.is_dying and self.knockback_timer <= 0:
             self.vy = self.jump_val
             self.on_ground = False
             self.coyote_timer = 0.0
             self.jump_buffer_timer = 0.0
             spawn_dust(self.x + self.w/2, self.y + self.h, count=8)
 
-        if (not self.slam_active) and self.jump_buffer_timer > 0.0 and self.on_wall and not self.on_ground and not self.is_dying:
+        if (not self.slam_active) and self.jump_buffer_timer > 0.0 and self.on_wall and not self.on_ground and not self.is_dying and self.knockback_timer <= 0:
             self.vy = WALL_JUMP_Y
             self.vx = -self.wall_dir * WALL_JUMP_X 
             self.jump_buffer_timer = 0.0
@@ -1246,8 +1275,9 @@ class Player:
             new_action = "die" 
         elif self.slam_active: 
             new_action = "slam"
-        elif self.invul_timer > 0 and int(self.invul_timer * 10) % 2 == 0:
-            new_action = "hit"
+        # Only play hit animation if recently hit (knockback) or periodic invul
+        elif self.knockback_timer > 0:
+             new_action = "hit"
         else:
             # Force "land" state while timer is active
             if self.landing_timer > 0.0:
@@ -1356,21 +1386,36 @@ class Player:
                         self.frame_index = (self.frame_index + 1) % anim_len
                     self.anim_timer = 0.0
 
-    def take_damage(self, amount):
+    def take_damage(self, amount, source_x=None):
         # Prevent damage if already dead/dying or invincible
         if self.invul_timer > 0 or self.slam_active or self.is_dying or not self.alive:
             return
         
         self.hp -= amount
-        self.invul_timer = 0.7
+        
+        # --- HIT EFFECTS ---
+        self.invul_timer = 1.2 
+        self.flash_on_invul = True # Real damage causes flashing
+        self.knockback_timer = 0.3 
         self.current_action = "hit" 
         
+        # --- KNOCKBACK PHYSICS ---
+        self.vy = -350 
+        self.on_ground = False
+        
+        # Horizontal push
+        kb_force = 300.0
+        if source_x is not None:
+            direction = -1 if (self.x + self.w/2) < source_x else 1
+            self.vx = direction * kb_force
+        else:
+            self.vx = -kb_force if self.facing_right else kb_force
+
         if self.hp <= 0:
             self.hp = 0
             self.is_dying = True
-            self.death_timer = 2.0  # Stay as a "dead body" for 2 seconds before Game Over
+            self.death_timer = 2.0 
             
-            # Create a small "death hop"
             self.vy = -300 
             self.vx = 0 
             self.slam_active = False
@@ -1378,16 +1423,17 @@ class Player:
     def draw(self, surf, cam_x, cam_y):
         # Ghost Trail
         for t in self.trail:
-            # Draw simplified ghost
             rect = pygame.Rect(t[0] - cam_x, t[1] - cam_y, self.w, self.h)
             s = pygame.Surface((int(self.w), int(self.h)), pygame.SRCALPHA)
             s.fill(self.color)
             s.set_alpha(int(t[2] * 0.5))
             surf.blit(s, rect)
 
-        # Hit flicker
-        if self.invul_timer > 0 and int(self.invul_timer * 10) % 2 == 0:
-            return
+        # --- Perfectly Synced Hit Flicker ---
+        # Only flicker if invul_timer > 0 AND flash_on_invul is True
+        if self.invul_timer > 0 and self.flash_on_invul:
+            if int(self.invul_timer * 15) % 2 != 0:
+                return # Skip drawing this frame
 
         # Drawing based on sprites if available
         if self.sprites:
@@ -1395,19 +1441,16 @@ class Player:
             if self.current_action == "idle":
                 frames = self.sprites.get(f"idle_{self.idle_state}", self.sprites.get("idle_main", []))
             elif self.current_action == "fall":
-                # Fall uses only the subset 5..10 of jump frames
                 if self.jump_frames:
                     frames = self.jump_frames[self.fall_start_idx:self.fall_end_idx + 1]
                 else:
                     frames = self.sprites.get("jump", self.sprites.get("idle_main", []))
             elif self.current_action == "slam":
-                # Slam has its own frames, else fall back to jump/idle
                 frames = self.slam_frames or self.jump_frames or self.sprites.get("idle_main", [])
             else:
                 frames = self.sprites.get(self.current_action, self.sprites.get("idle_main", []))
 
             if not frames: 
-                # Fallback to rect
                 draw_x = self.x - cam_x
                 draw_y = self.y - cam_y
                 pygame.draw.rect(surf, self.color, (draw_x, draw_y, self.w, self.h))
@@ -1453,31 +1496,45 @@ class Player:
             pygame.draw.circle(surf, (200, 255, 255), (cx, cy), rad, 2)
 
 class Enemy:
-    CHASE_RADIUS = 220.0
-
-    def __init__(self, sprite, x, y, patrol_range=64):
+    def __init__(self, sprite, x, y, hp=2.0):
         self.w, self.h = sprite.get_width(), sprite.get_height()
         self.x, self.y = x, y
-        self.base_x = x
-        self.range = patrol_range
-        self.vx = 60.0
+        self.vx = 60.0 # Constant patrol speed
         self.vy = 0.0
+        
+        self.max_hp = hp
+        self.hp = self.max_hp
+        self.invul_timer = 0.0 # Enemy i-frames
+        
         self.alive = True
         self.anim_timer = 0.0
 
     def rect(self): return pygame.Rect(int(self.x), int(self.y), self.w, self.h)
 
-    def check_line_of_sight(self, level, target):
-        x1, y1 = self.rect().center
-        x2, y2 = target.rect().center
-        for plat in level.platform_segments:
-            if min(y1, y2) < plat.bottom and max(y1, y2) > plat.top:
-                if plat.clipline(x1, y1, x2, y2): return False
-        return True
+    def take_damage(self, amount):
+        """
+        Returns True if the enemy died from this damage, False otherwise.
+        """
+        if self.invul_timer > 0: return False
+        
+        self.hp -= amount
+        self.invul_timer = 0.15 # Short invulnerability (lower than player's)
+        
+        # Flash effect or pushback could go here
+        
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+            return True
+        return False
 
     def update(self, dt, players, level, cam_rect):
         if not self.alive: return False
         self.anim_timer += dt
+        
+        # Tick down invulnerability
+        if self.invul_timer > 0:
+            self.invul_timer -= dt
         
         my_rect = self.rect()
         if not my_rect.colliderect(cam_rect):
@@ -1486,34 +1543,15 @@ class Enemy:
             if self.x < cam_rect.left - 200: self.alive = False
             return False
 
-        for obs in level.obstacles:
-            if my_rect.colliderect(obs):
-                self.alive = False
-                return True 
-
-        target = None
-        nearest_dist = 999999
-        for p in players:
-            if not p.alive: continue
-            dist = abs(p.x - self.x)
-            if dist < nearest_dist:
-                nearest_dist = dist
-                if nearest_dist < self.CHASE_RADIUS and self.check_line_of_sight(level, p):
-                    target = p
-        
-        if target: self.vx = (1 if target.x > self.x else -1) * 90.0
-        else:
-            if self.x > self.base_x + self.range: self.vx = -abs(self.vx)
-            elif self.x < self.base_x - self.range: self.vx = abs(self.vx)
-
         self.vy += BASE_GRAVITY * dt
         
-        feet_rect = pygame.Rect(int(self.x + 5), int(self.y + self.h), self.w - 10, 4)
-        if level.get_collision_tiles(feet_rect):
-            probe_x = self.x + self.w + (10 if self.vx > 0 else -10) if self.vx > 0 else self.x + (10 if self.vx > 0 else -10)
-            if not level.get_collision_tiles(pygame.Rect(int(probe_x), int(self.y + self.h + 2), 4, 4)):
-                if target: self.vx = 0
-                else: self.vx *= -1
+        # Look ahead of where we are going
+        look_ahead_x = self.x + self.w + 5 if self.vx > 0 else self.x - 5
+        feet_check = pygame.Rect(int(look_ahead_x), int(self.y + self.h + 2), 4, 4)
+        
+        # If there are NO tiles below the look-ahead point, we are at a ledge -> Turn around
+        if not level.get_collision_tiles(feet_check):
+            self.vx *= -1
 
         ny = self.y + self.vy * dt
         rect = pygame.Rect(int(self.x), int(ny), self.w, self.h)
@@ -1532,23 +1570,38 @@ class Enemy:
         tiles = level.get_collision_tiles(rect)
         self.x = nx
         rect.x = int(self.x)
+        
+        # If we hit a wall, turn around
         for t in tiles:
             if rect.colliderect(t):
                 if self.vx > 0: self.x = t.left - self.w
                 elif self.vx < 0: self.x = t.right
                 rect.x = int(self.x)
-                self.vx *= -1
+                self.vx *= -1 # Bounce
+
         return False 
 
     def draw(self, surf, cam_x, cam_y):
         if not self.alive: return
         
+        # --- FLICKER EFFECT IF INVULNERABLE ---
+        if self.invul_timer > 0:
+            # Flicker fast (every other frame roughly)
+            if int(self.invul_timer * 30) % 2 != 0:
+                return
+
         # Waddle animation
         waddle = math.sin(self.anim_timer * 10) * 2
         
         # Draw Body
         r = pygame.Rect(self.x - cam_x - waddle/2, self.y - cam_y + abs(waddle), self.w + waddle, self.h - abs(waddle))
-        pygame.draw.rect(surf, (160, 20, 40), r, border_radius=4)
+        
+        # Color changes slightly if damaged
+        color = (160, 20, 40)
+        if self.hp < self.max_hp:
+            color = (180, 60, 80) # Lighter red if hurt
+
+        pygame.draw.rect(surf, color, r, border_radius=4)
         
         # Draw Eyes (Looking direction)
         eye_off = 4 if self.vx > 0 else -4
@@ -1558,6 +1611,14 @@ class Enemy:
         # Angry Eyebrows
         pygame.draw.line(surf, (0,0,0), (r.centerx + eye_off - 7, r.y + 7), (r.centerx + eye_off - 2, r.y + 10), 1)
         pygame.draw.line(surf, (0,0,0), (r.centerx + eye_off + 7, r.y + 7), (r.centerx + eye_off + 2, r.y + 10), 1)
+        
+        # HP Bar (Mini) - Only show if damaged
+        if self.hp < self.max_hp:
+            bar_w = self.w
+            bar_h = 3
+            hp_pct = self.hp / self.max_hp
+            pygame.draw.rect(surf, (0,0,0), (r.x, r.y - 6, bar_w, bar_h))
+            pygame.draw.rect(surf, (255, 0, 0), (r.x, r.y - 6, bar_w * hp_pct, bar_h))
 
 class LevelManager:
     def __init__(self, tile_surface, enemy_sprite, seed):
@@ -2612,8 +2673,20 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                             break
 
                 for orb in level.orbs[:]:
-                    if use_p1 and p1.alive and p1.rect().colliderect(orb): p1_orbs += 1; level.orbs.remove(orb); continue
-                    if use_p2 and p2.alive and p2.rect().colliderect(orb): p2_orbs += 1; level.orbs.remove(orb)
+                    # Check Player 1
+                    if use_p1 and p1.alive and p1.rect().colliderect(orb): 
+                        p1_orbs += 1
+                        # Spawn the text
+                        floating_texts.append(FloatingText(orb.x, orb.y, "+100 PTS", font_small, COL_ACCENT_3))
+                        level.orbs.remove(orb)
+                        continue
+                    
+                    # Check Player 2
+                    if use_p2 and p2.alive and p2.rect().colliderect(orb): 
+                        p2_orbs += 1
+                        # Spawn the text
+                        floating_texts.append(FloatingText(orb.x, orb.y, "+100 PTS", font_small, COL_ACCENT_3))
+                        level.orbs.remove(orb)
 
                 def resolve_slam(player):
                     if not player.pending_slam_impact: return
@@ -2622,34 +2695,77 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                     if player.slam_impact_power > 150: screen_shake_timer = 0.2
                     radius = SLAM_BASE_RADIUS + player.slam_impact_power * SLAM_RADIUS_PER_HEIGHT
                     cx, cy = player.x + player.w / 2, player.y + player.h
+                    
+                    player.invul_timer = 0.5 
+                    player.flash_on_invul = False
+                    
                     for e in level.enemies:
                         if not e.alive: continue
                         ex, ey = e.x + e.w / 2, e.y + e.h / 2
+                        
+                        # Radial Collision check
                         if (ex - cx)**2 + (ey - cy)**2 <= radius**2: 
-                             e.alive = False
-                             level.spawn_credit(e.x, e.y, 1.0)
+                             # Slam deals 1.0 HP
+                             died = e.take_damage(1.0)
+                             if died:
+                                 level.spawn_credit(e.x, e.y, 1.0)
+                             else:
+                                 # Visual feedback for hit
+                                 spawn_dust(e.x + e.w/2, e.y, 3, (255, 100, 100))
 
                 def handle_collisions_for_player(player):
                     if not player.alive or player.is_dying: return
-                    # Death by falling (Horizontal logic: Y > VIRTUAL_H + offset)
-                    if player.y > VIRTUAL_H + 200: player.take_damage(999); return
+                    
+                    # Falling into void deals 1 HP and Teleports back
+                    if player.y > VIRTUAL_H + 200: 
+                        player.take_damage(1)
+                        if player.alive:
+                            # Teleport to last safe ground
+                            player.x = player.last_safe_x
+                            player.y = player.last_safe_y - TILE_SIZE 
+                            player.vx = 0
+                            player.vy = 0
+                            player.slam_active = False
+                        return
                     
                     r = player.rect()
+                    # Obstacle Collisions
                     for obs in level.obstacles: 
-                        if r.colliderect(obs): player.take_damage(100); return
+                        if r.colliderect(obs): 
+                            player.take_damage(1, source_x=obs.centerx) 
+                            return
+                    
+                    # Enemy Collisions
                     for e in level.enemies: 
                         if r.colliderect(e.rect()): 
                             player_bottom = player.y + player.h
                             enemy_center = e.y + e.h * 0.5
                             is_above = player_bottom < enemy_center + 5
                             is_falling = player.vy > 0
+                            
                             if player.slam_active or (is_falling and is_above):
-                                e.alive = False
-                                player.vy = -300
+                                damage = 1.0 if player.slam_active else 0.5
+                                
+                                died = e.take_damage(damage)
+                                player.vy = -700.0 
+                                player.invul_timer = 0.2 
+                                player.flash_on_invul = False 
+                                
                                 player.slam_cooldown = 0 
                                 player.slam_active = False 
-                                level.spawn_credit(e.x, e.y, 1.0) 
-                            else: player.take_damage(1)
+                                
+                                if died:
+                                    level.spawn_credit(e.x, e.y, 1.0) 
+                                else:
+                                    spawn_dust(e.x + e.w/2, e.y, 3, (255, 50, 50))
+                            
+                            # --- PLAYER HIT LOGIC ---
+                            else: 
+                                # Only take damage if the enemy isn't currently stunned/flashing
+                                if e.invul_timer > 0:
+                                    return
+                                    
+                                player.take_damage(1, source_x=(e.x + e.w/2))
                             return
 
                 if net_role == ROLE_LOCAL_ONLY:
