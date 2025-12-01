@@ -37,7 +37,7 @@ WALL_JUMP_X = 250.0
 WALL_JUMP_Y = -450.0        
 
 # Horizontal Scroll Constants
-SCROLL_OFFSET_X = 200.0      
+SCROLL_OFFSET_X = 200.0       
 
 BASE_SLAM_SPEED = 900.0                 
 BASE_SLAM_COOLDOWN = 1.0                
@@ -215,7 +215,7 @@ def load_save_data():
                     data["credits"] = float(saved["coins"])
                 else:
                     data["credits"] = float(saved.get("credits", 0))
-                    
+                 
                 if "upgrades" in saved:
                     for k in data["upgrades"]:
                         data["upgrades"][k] = saved["upgrades"].get(k, 0)
@@ -462,12 +462,9 @@ def draw_gradient_background(surf, stage):
 # =========================
 # ASSET MANAGEMENT
 # =========================
-def load_sprite_sheet(path, cols, rows, row_index):
+def load_sprite_sheet(path, cols, rows, row_index, scale=1.5):
     """
     Extracts frames from a specific row in a sprite sheet.
-    
-    The function requires knowing the total grid dimensions (cols, rows)
-    but automatically crops each frame to fit the content.
     """
     frames = []
     if not os.path.exists(path):
@@ -499,8 +496,6 @@ def load_sprite_sheet(path, cols, rows, row_index):
             frame.blit(sheet, (0, 0), rect)
             
             # Crop to visible pixels (get just the slime)
-            # This makes the actual hitbox/drawing size match the sprite's content, 
-            # while the calculated frame_w/frame_h defines the grid division.
             bbox = frame.get_bounding_rect()
             if bbox.width > 0 and bbox.height > 0:
                 cropped = pygame.Surface((bbox.width, bbox.height), pygame.SRCALPHA)
@@ -508,8 +503,7 @@ def load_sprite_sheet(path, cols, rows, row_index):
                 frame = cropped
             
             # Scale up slightly (1.5x for visibility and retro feel)
-            scale_factor = 1.5
-            frame = pygame.transform.scale(frame, (int(frame.get_width() * scale_factor), int(frame.get_height() * scale_factor)))
+            frame = pygame.transform.scale(frame, (int(frame.get_width() * scale), int(frame.get_height() * scale)))
             frames.append(frame)
             
     except Exception as e:
@@ -1496,31 +1490,40 @@ class Player:
             pygame.draw.circle(surf, (200, 255, 255), (cx, cy), rad, 2)
 
 class Enemy:
-    def __init__(self, sprite, x, y, hp=2.0):
-        self.w, self.h = sprite.get_width(), sprite.get_height()
-        self.x, self.y = x, y
-        self.vx = 60.0 # Constant patrol speed
-        self.vy = 0.0
+    def __init__(self, sprite_dict, x, y, hp=1.0, is_boss=False):
+        self.sprites = sprite_dict
         
+        # Determine hitbox size based on the first frame of the walk animation
+        if self.sprites and "walk" in self.sprites and len(self.sprites["walk"]) > 0:
+            ref_surf = self.sprites["walk"][0]
+            self.w, self.h = ref_surf.get_width(), ref_surf.get_height()
+        else:
+            self.w, self.h = 32, 32  # Fallback size if sprites fail to load
+
+        self.x, self.y = x, y
+        self.vx = 60.0  # Constant patrol speed
+        self.vy = 0.0
+        self.facing_right = True # Track direction for flipping sprites
+        
+        self.is_boss = is_boss 
         self.max_hp = hp
         self.hp = self.max_hp
-        self.invul_timer = 0.0 # Enemy i-frames
+        self.invul_timer = 0.0 
         
         self.alive = True
         self.anim_timer = 0.0
+        self.frame_index = 0
+        self.current_action = "walk"
 
     def rect(self): return pygame.Rect(int(self.x), int(self.y), self.w, self.h)
 
     def take_damage(self, amount):
-        """
-        Returns True if the enemy died from this damage, False otherwise.
-        """
         if self.invul_timer > 0: return False
         
         self.hp -= amount
-        self.invul_timer = 0.15 # Short invulnerability (lower than player's)
-        
-        # Flash effect or pushback could go here
+        self.invul_timer = 0.2 # Short invulnerability
+        self.current_action = "hurt" # Switch to hurt animation
+        self.frame_index = 0 # Reset frame for the hit reaction
         
         if self.hp <= 0:
             self.hp = 0
@@ -1530,12 +1533,25 @@ class Enemy:
 
     def update(self, dt, players, level, cam_rect):
         if not self.alive: return False
+        
+        # --- ANIMATION TIMING ---
         self.anim_timer += dt
-        
-        # Tick down invulnerability
-        if self.invul_timer > 0:
+        anim_speed = 0.15
+        if self.anim_timer > anim_speed:
+            self.frame_index += 1
+            self.anim_timer = 0.0
+
+        # Reset state to walk if invul/hurt animation finishes
+        if self.invul_timer <= 0:
+            self.current_action = "walk"
+        else:
             self.invul_timer -= dt
+
+        # Direction check
+        if self.vx > 0: self.facing_right = True
+        elif self.vx < 0: self.facing_right = False
         
+        # --- CLEANUP ---
         my_rect = self.rect()
         if not my_rect.colliderect(cam_rect):
             # Clean up if fell off screen or way behind
@@ -1543,13 +1559,12 @@ class Enemy:
             if self.x < cam_rect.left - 200: self.alive = False
             return False
 
+        # --- PHYSICS ---
         self.vy += BASE_GRAVITY * dt
         
-        # Look ahead of where we are going
+        # Ledge Detection
         look_ahead_x = self.x + self.w + 5 if self.vx > 0 else self.x - 5
         feet_check = pygame.Rect(int(look_ahead_x), int(self.y + self.h + 2), 4, 4)
-        
-        # If there are NO tiles below the look-ahead point, we are at a ledge -> Turn around
         if not level.get_collision_tiles(feet_check):
             self.vx *= -1
 
@@ -1571,60 +1586,67 @@ class Enemy:
         self.x = nx
         rect.x = int(self.x)
         
-        # If we hit a wall, turn around
+        # Wall Bounce
         for t in tiles:
             if rect.colliderect(t):
                 if self.vx > 0: self.x = t.left - self.w
                 elif self.vx < 0: self.x = t.right
                 rect.x = int(self.x)
-                self.vx *= -1 # Bounce
+                self.vx *= -1 
+
+        # --- SPIKE DAMAGE LOGIC ---
+        # Check against level obstacles (spikes)
+        my_hitbox = self.rect()
+        for obs in level.obstacles:
+            if my_hitbox.colliderect(obs):
+                # Enemy hit a spike -> Insta-kill or high damage
+                died = self.take_damage(10.0) 
+                if died: return True 
 
         return False 
 
     def draw(self, surf, cam_x, cam_y):
         if not self.alive: return
         
-        # --- FLICKER EFFECT IF INVULNERABLE ---
-        if self.invul_timer > 0:
-            # Flicker fast (every other frame roughly)
-            if int(self.invul_timer * 30) % 2 != 0:
+        # Retrieve frames
+        frames = self.sprites.get(self.current_action, self.sprites.get("walk", []))
+        if not frames: return
+
+        # Loop animation
+        img = frames[self.frame_index % len(frames)]
+
+        # Flip if moving right
+        if self.facing_right:
+            img = pygame.transform.flip(img, True, False)
+
+        draw_x = self.x - cam_x
+        draw_y = self.y - cam_y
+
+        # Visual Flash effect when hurt
+        if self.current_action == "hurt":
+            if int(self.invul_timer * 20) % 2 == 0:
+                # Create a white silhouette for flashing
+                flash_surf = img.copy()
+                flash_surf.fill((255, 255, 255, 200), special_flags=pygame.BLEND_RGBA_MULT)
+                surf.blit(flash_surf, (draw_x, draw_y))
                 return
 
-        # Waddle animation
-        waddle = math.sin(self.anim_timer * 10) * 2
-        
-        # Draw Body
-        r = pygame.Rect(self.x - cam_x - waddle/2, self.y - cam_y + abs(waddle), self.w + waddle, self.h - abs(waddle))
-        
-        # Color changes slightly if damaged
-        color = (160, 20, 40)
-        if self.hp < self.max_hp:
-            color = (180, 60, 80) # Lighter red if hurt
-
-        pygame.draw.rect(surf, color, r, border_radius=4)
-        
-        # Draw Eyes (Looking direction)
-        eye_off = 4 if self.vx > 0 else -4
-        pygame.draw.rect(surf, (255, 255, 255), (r.centerx + eye_off - 6, r.y + 8, 4, 4))
-        pygame.draw.rect(surf, (255, 255, 255), (r.centerx + eye_off + 2, r.y + 8, 4, 4))
-        
-        # Angry Eyebrows
-        pygame.draw.line(surf, (0,0,0), (r.centerx + eye_off - 7, r.y + 7), (r.centerx + eye_off - 2, r.y + 10), 1)
-        pygame.draw.line(surf, (0,0,0), (r.centerx + eye_off + 7, r.y + 7), (r.centerx + eye_off + 2, r.y + 10), 1)
+        surf.blit(img, (draw_x, draw_y))
         
         # HP Bar (Mini) - Only show if damaged
         if self.hp < self.max_hp:
             bar_w = self.w
             bar_h = 3
             hp_pct = self.hp / self.max_hp
-            pygame.draw.rect(surf, (0,0,0), (r.x, r.y - 6, bar_w, bar_h))
-            pygame.draw.rect(surf, (255, 0, 0), (r.x, r.y - 6, bar_w * hp_pct, bar_h))
+            pygame.draw.rect(surf, (0,0,0), (draw_x, draw_y - 6, bar_w, bar_h))
+            pygame.draw.rect(surf, (255, 0, 0), (draw_x, draw_y - 6, bar_w * hp_pct, bar_h))
 
 class LevelManager:
-    def __init__(self, tile_surface, enemy_sprite, seed):
+    # UPDATED: Renamed enemy_sprite to enemy_sprite_dict in arguments
+    def __init__(self, tile_surface, enemy_sprite_dict, seed):
         self.rng = random.Random(seed)
         self.tile_surf = tile_surface
-        self.enemy_sprite = enemy_sprite
+        self.enemy_sprites = enemy_sprite_dict # Store the dict
         self.platform_segments = []
         self.enemies = []
         self.obstacles = []
@@ -1707,10 +1729,18 @@ class LevelManager:
         if self.current_stage == 2: enemy_chance = 0.5
         if self.current_stage == 3: enemy_chance = 0.7
         
+        # Calculate spawn height based on the "walk" sprite size
+        ref_width = 32
+        ref_height = 32
+        if "walk" in self.enemy_sprites and self.enemy_sprites["walk"]:
+            ref_surf = self.enemy_sprites["walk"][0]
+            ref_width = ref_surf.get_width()
+            ref_height = ref_surf.get_height()
+
         if self.rng.random() < enemy_chance and plat_w > TILE_SIZE * 5:
-            ex = new_x + plat_w // 2 - self.enemy_sprite.get_width() // 2
-            ey = plat_y - self.enemy_sprite.get_height()
-            self.enemies.append(Enemy(self.enemy_sprite, ex, ey))
+            ex = new_x + plat_w // 2 - ref_width // 2
+            ey = plat_y - ref_height
+            self.enemies.append(Enemy(self.enemy_sprites, ex, ey))
         
         # Spike Chance
         if self.rng.random() < 0.25 and self.current_stage > 1:
@@ -1846,7 +1876,22 @@ def main():
     player1_sprite = p1_sprites
     player2_sprite = p2_sprites
     
-    enemy_sprite = make_enemy_surface() # Kept for sizing
+    # --- ENEMY SPRITES (UPDATED PATH) ---
+    # Path is: data/gfx/Enemy
+    enemy_path = get_asset_path("data", "gfx", "Enemy")
+
+    ENEMY_SCALE = 0.9
+    
+    # Load spritesheets (4 columns, 1 row)
+    enemy_walk_frames = load_sprite_sheet(os.path.join(enemy_path, "spr_monster_reg_strip4.png"), 4, 1, 0, scale=ENEMY_SCALE)
+    enemy_hurt_frames = load_sprite_sheet(os.path.join(enemy_path, "spr_enemy_reg_hurt_strip4.png"), 4, 1, 0, scale=ENEMY_SCALE)
+
+    # Pack into dictionary
+    enemy_sprite_dict = {
+        "walk": enemy_walk_frames,
+        "hurt": enemy_hurt_frames
+    }
+
     tile_surf = make_tile_surface()
     wall_surf = make_wall_surface(VIRTUAL_H)
 
@@ -1897,7 +1942,7 @@ def main():
             main_buttons.append(Button(rect, label, font_med, cb, color=color, accent=accent))
             y += 50
         
-        add_btn("Single Player", lambda: start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, MODE_SINGLE, None, local_two_players=False, bg_obj=night_bg))
+        add_btn("Single Player", lambda: start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, MODE_SINGLE, None, local_two_players=False, bg_obj=night_bg))
         add_btn("Multiplayer", lambda: set_state(STATE_MULTIPLAYER_MENU), accent=COL_ACCENT_3)
         add_btn("Shop", lambda: set_state(STATE_SHOP))
         add_btn("Settings", lambda: set_state(STATE_SETTINGS))
@@ -2005,7 +2050,7 @@ def main():
                 if not network.connected: return
                 network.send_start_game()
                 time.sleep(0.2)
-                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
+                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
             
             start_btn = Button(pygame.Rect(460, 285, 140, 30), "Start Match", font_small, host_start_action, accent=COL_ACCENT_2)
             if not network.connected:
@@ -2055,7 +2100,7 @@ def main():
 
             def play_local():
                 network.close() 
-                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, local_two_players=True, bg_obj=night_bg)
+                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, local_two_players=True, bg_obj=night_bg)
             mp_buttons.append(Button(pygame.Rect(460, 70, 140, 30), "Play Local", font_small, play_local, accent=COL_ACCENT_3))
 
             mp_ip_input.rect = pygame.Rect(220, 110, 220, 30)
@@ -2134,7 +2179,7 @@ def main():
                 last_connected_status = network.connected
                 rebuild_mp_menu()
             if network.role == ROLE_CLIENT and network.check_remote_start():
-                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
+                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
             if network.role == ROLE_HOST:
                 host_sync_timer += dt
                 if host_sync_timer > 0.5: 
@@ -2404,7 +2449,7 @@ def apply_screen_mode(window, mode_index):
 # =========================
 # GAME SESSION
 # =========================
-def start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprites, player2_sprites, enemy_sprite, tile_surf, wall_surf, lb, network, net_role, mode, mp_name_hint=None, local_two_players=False, bg_obj=None):
+def start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprites, player2_sprites, enemy_sprite_dict, tile_surf, wall_surf, lb, network, net_role, mode, mp_name_hint=None, local_two_players=False, bg_obj=None):
     clock = pygame.time.Clock()
     
     # Stop Menu Music
@@ -2422,7 +2467,7 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
         game_seed = 0 
         random.seed(game_seed)
 
-    level = LevelManager(tile_surf, enemy_sprite, game_seed) 
+    level = LevelManager(tile_surf, enemy_sprite_dict, game_seed) 
     particles.clear()
     floating_texts.clear()
     
@@ -2601,7 +2646,7 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 remote_player.hp = rstate.get("hp", 3)
                 if waiting_for_seed and rstate["seed"] != 0:
                     game_seed = rstate["seed"]
-                    level = LevelManager(tile_surf, enemy_sprite, game_seed)
+                    level = LevelManager(tile_surf, enemy_sprite_dict, game_seed)
                     waiting_for_seed = False 
 
             if not waiting_for_seed:
@@ -2705,8 +2750,14 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                         
                         # Radial Collision check
                         if (ex - cx)**2 + (ey - cy)**2 <= radius**2: 
-                             # Slam deals 1.0 HP
-                             died = e.take_damage(1.0)
+                             damage = 1.0 # Default damage
+                             
+                             # If it is NOT a boss, set damage to current HP (Insta-Kill)
+                             if not getattr(e, 'is_boss', False):
+                                 damage = e.max_hp 
+
+                             died = e.take_damage(damage)
+
                              if died:
                                  level.spawn_credit(e.x, e.y, 1.0)
                              else:
@@ -2744,7 +2795,15 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                             is_falling = player.vy > 0
                             
                             if player.slam_active or (is_falling and is_above):
-                                damage = 1.0 if player.slam_active else 0.5
+                                damage = 0.5
+                                
+                                if player.slam_active:
+                                    # If active slam AND not a boss -> Insta Kill
+                                    if not getattr(e, 'is_boss', False):
+                                        damage = e.max_hp
+                                    else:
+                                        damage = 1.0 # Standard damage for boss
+                                # ----------------------------
                                 
                                 died = e.take_damage(damage)
                                 player.vy = -700.0 
@@ -2761,7 +2820,6 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                             
                             # --- PLAYER HIT LOGIC ---
                             else: 
-                                # Only take damage if the enemy isn't currently stunned/flashing
                                 if e.invul_timer > 0:
                                     return
                                     
