@@ -1650,6 +1650,7 @@ class LevelManager:
         self.enemies = []
         self.obstacles = []
         self.orbs = []
+        self.health_orbs = []
         self.dropped_credits = []
         
         # Start Generation at X=0
@@ -1785,7 +1786,13 @@ class LevelManager:
         if self.rng.random() < 0.5:
              orb_size = TILE_SIZE // 2
              ox = new_x + plat_w // 2 - orb_size // 2
-             self.orbs.append(pygame.Rect(ox, new_y - 3 * TILE_SIZE, orb_size, orb_size))
+             rect = pygame.Rect(ox, new_y - 3 * TILE_SIZE, orb_size, orb_size)
+             
+             # 8% Chance to spawn a Health Orb instead of a Point Orb
+             if self.rng.random() < 0.08: 
+                 self.health_orbs.append(rect)
+             else:
+                 self.orbs.append(rect)
 
     def spawn_credit(self, x, y, value):
         self.dropped_credits.append(Credit(x, y, value))
@@ -1804,6 +1811,7 @@ class LevelManager:
         self.platform_segments = [s for s in self.platform_segments if s.right > cleanup_x]
         self.obstacles = [o for o in self.obstacles if o.right > cleanup_x]
         self.orbs = [o for o in self.orbs if o.right > cleanup_x]
+        self.health_orbs = [h for h in self.health_orbs if h.right > cleanup_x] # <--- NEW: Cleanup
         self.enemies = [e for e in self.enemies if e.alive and e.x > cleanup_x]
         
         for c in self.dropped_credits: c.update(dt, self)
@@ -1833,11 +1841,26 @@ class LevelManager:
         # Orb Bobbing
         bob = math.sin(self.orb_timer * 3) * 3
         
+        # Point Orbs (Gold)
         for orb in self.orbs:
             cx = orb.x - cam_x + orb.w // 2
             cy = orb.y - cam_y + orb.h // 2 + bob
             pygame.draw.circle(surf, COL_ACCENT_3, (cx, cy), orb.w // 2)
             pygame.draw.circle(surf, (255, 255, 200), (cx, cy), orb.w // 2 + 2, 1)
+
+        # Draw Health Orbs (Green with a Cross)
+        for horb in self.health_orbs:
+            cx = horb.x - cam_x + horb.w // 2
+            cy = horb.y - cam_y + horb.h // 2 + bob
+            # Green Body
+            pygame.draw.circle(surf, (50, 255, 50), (cx, cy), horb.w // 2)
+            # White Border
+            pygame.draw.circle(surf, (255, 255, 255), (cx, cy), horb.w // 2 + 2, 1)
+            # Small White Cross logic
+            cr_sz = 3
+            pygame.draw.rect(surf, (255, 255, 255), (cx - 1, cy - cr_sz, 2, cr_sz*2))
+            pygame.draw.rect(surf, (255, 255, 255), (cx - cr_sz, cy - 1, cr_sz*2, 2))
+
         for c in self.dropped_credits: c.draw(surf, cam_x, cam_y)
         for e in self.enemies: e.draw(surf, cam_x, cam_y)
 
@@ -2767,6 +2790,28 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                         # Spawn the text
                         floating_texts.append(FloatingText(orb.x, orb.y, "+100 PTS", font_small, COL_ACCENT_3))
                         level.orbs.remove(orb)
+
+                for horb in level.health_orbs[:]:
+                    # P1 check
+                    if use_p1 and p1.alive and p1.rect().colliderect(horb): 
+                        if p1.hp < p1.max_hp:
+                            p1.hp += 1
+                            floating_texts.append(FloatingText(horb.x, horb.y, "+1 HP", font_small, (50, 255, 50)))
+                        else:
+                            # If full HP, just give a small score bonus or "MAX" text
+                            floating_texts.append(FloatingText(horb.x, horb.y, "MAX HP", font_small, (200, 255, 200)))
+                        level.health_orbs.remove(horb)
+                        continue
+                    
+                    # P2 check
+                    if use_p2 and p2.alive and p2.rect().colliderect(horb): 
+                        if p2.hp < p2.max_hp:
+                            p2.hp += 1
+                            floating_texts.append(FloatingText(horb.x, horb.y, "+1 HP", font_small, (50, 255, 50)))
+                        else:
+                            floating_texts.append(FloatingText(horb.x, horb.y, "MAX HP", font_small, (200, 255, 200)))
+                        level.health_orbs.remove(horb)
+                # ==========================================
 
                 def resolve_slam(player):
                     if not player.pending_slam_impact: return
