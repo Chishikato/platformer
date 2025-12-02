@@ -33,16 +33,16 @@ BASE_GRAVITY = 1400.0
 BASE_JUMP_VEL = -550.0
 BASE_PLAYER_SPEED = 220.0
 WALL_SLIDE_SPEED = 50.0 
-WALL_JUMP_X = 250.0         
+WALL_JUMP_X = 250.0          
 WALL_JUMP_Y = -450.0        
 
 # Horizontal Scroll Constants
-SCROLL_OFFSET_X = 200.0       
+SCROLL_OFFSET_X = 200.0        
 
-BASE_SLAM_SPEED = 900.0                 
+BASE_SLAM_SPEED = 900.0                  
 BASE_SLAM_COOLDOWN = 1.0                
-SLAM_BASE_RADIUS = 40.0         
-SLAM_RADIUS_PER_HEIGHT = 0.25   
+SLAM_BASE_RADIUS = 40.0          
+SLAM_RADIUS_PER_HEIGHT = 0.25    
 
 TILE_SIZE = 20 
 # Ground level for horizontal play
@@ -215,7 +215,7 @@ def load_save_data():
                     data["credits"] = float(saved["coins"])
                 else:
                     data["credits"] = float(saved.get("credits", 0))
-                 
+                  
                 if "upgrades" in saved:
                     for k in data["upgrades"]:
                         data["upgrades"][k] = saved["upgrades"].get(k, 0)
@@ -1966,16 +1966,30 @@ def main():
     night_bg = ParallaxBackground("Night", VIRTUAL_W, VIRTUAL_H)
     menu_scroll_x = 0.0
 
-    # Load Menu Music
-    MENU_BGM_PATH = get_asset_path("data", "sfx", "ui_bgm_space_riddle.flac")
-    menu_music_loaded = False
-    if os.path.exists(MENU_BGM_PATH):
-        try:
-            pygame.mixer.music.load(MENU_BGM_PATH)
-            menu_music_loaded = True
-            pygame.mixer.music.play(-1)
-        except Exception as e:
-            print(f"Music load failed: {e}")
+    # Update filename to the requested OGG file
+    MENU_BGM_PATH = get_asset_path("data", "sfx", "pck404_cosy_bossa.ogg")
+    
+    def play_menu_music():
+        """Helper to restart menu music safely"""
+        if os.path.exists(MENU_BGM_PATH):
+            try:
+                # Only reload if it's not already playing to avoid stutter on loop
+                # However, since we switch tracks in game, we force load here usually.
+                pygame.mixer.music.load(MENU_BGM_PATH)
+                pygame.mixer.music.set_volume(settings.music_volume * settings.master_volume)
+                pygame.mixer.music.play(-1)
+            except Exception as e:
+                print(f"Music load failed: {e}")
+
+    # Play immediately on launch
+    play_menu_music()
+    
+    # --- WRAPPER TO RESTORE MUSIC AFTER GAME ---
+    def start_game_wrapper(*args, **kwargs):
+        """Launches game, then restores menu music when game exits."""
+        start_game(*args, **kwargs)
+        # When start_game returns, we are back in the menu
+        play_menu_music()
     
     main_buttons = []
     settings_widgets = []
@@ -2002,7 +2016,7 @@ def main():
             main_buttons.append(Button(rect, label, font_med, cb, color=color, accent=accent))
             y += 50
         
-        add_btn("Single Player", lambda: start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, MODE_SINGLE, None, local_two_players=False, bg_obj=night_bg))
+        add_btn("Single Player", lambda: start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, MODE_SINGLE, None, local_two_players=False, bg_obj=night_bg))
         add_btn("Multiplayer", lambda: set_state(STATE_MULTIPLAYER_MENU), accent=COL_ACCENT_3)
         add_btn("Shop", lambda: set_state(STATE_SHOP))
         add_btn("Settings", lambda: set_state(STATE_SETTINGS))
@@ -2078,8 +2092,6 @@ def main():
             # --- LEFT PANEL ---
             mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Room: HOST", font_med, None, color=COL_ACCENT_1))
             mp_buttons.append(Button(pygame.Rect(30, 120, 160, 30), "Invite Players", font_small, lambda: print("Invite clicked")))
-            mp_buttons.append(Button(pygame.Rect(30, 160, 160, 30), "Kick Player", font_small, lambda: print("Kick clicked"), color=(60, 20, 20)))
-            mp_buttons.append(Button(pygame.Rect(30, 270, 160, 30), "Disband Lobby", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(80, 10, 10)))
 
             def trigger_kick_confirm():
                 nonlocal show_kick_confirm
@@ -2093,6 +2105,7 @@ def main():
                 kick_btn.base_color = (40, 20, 20) # Dimmed
             
             mp_buttons.append(kick_btn)
+            mp_buttons.append(Button(pygame.Rect(30, 270, 160, 30), "Disband Lobby", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(80, 10, 10)))
 
             # --- RIGHT PANEL (Controls) ---
             def toggle_mode():
@@ -2110,7 +2123,7 @@ def main():
                 if not network.connected: return
                 network.send_start_game()
                 time.sleep(0.2)
-                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
+                start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
             
             start_btn = Button(pygame.Rect(460, 285, 140, 30), "Start Match", font_small, host_start_action, accent=COL_ACCENT_2)
             if not network.connected:
@@ -2160,7 +2173,7 @@ def main():
 
             def play_local():
                 network.close() 
-                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, local_two_players=True, bg_obj=night_bg)
+                start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, local_two_players=True, bg_obj=night_bg)
             mp_buttons.append(Button(pygame.Rect(460, 70, 140, 30), "Play Local", font_small, play_local, accent=COL_ACCENT_3))
 
             mp_ip_input.rect = pygame.Rect(220, 110, 220, 30)
@@ -2221,8 +2234,8 @@ def main():
 
         # Check Music Status (Restart if stopped by game and back in menu)
         if game_state in (STATE_MAIN_MENU, STATE_SETTINGS, STATE_SHOP, STATE_MULTIPLAYER_MENU, STATE_LEADERBOARD):
-            if menu_music_loaded and not pygame.mixer.music.get_busy():
-                pygame.mixer.music.play(-1)
+            if not pygame.mixer.music.get_busy():
+                play_menu_music()
         
         # Handle Window Scaling (Maintain Aspect Ratio)
         win_w, win_h = window.get_size()
@@ -2239,7 +2252,7 @@ def main():
                 last_connected_status = network.connected
                 rebuild_mp_menu()
             if network.role == ROLE_CLIENT and network.check_remote_start():
-                start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
+                start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
             if network.role == ROLE_HOST:
                 host_sync_timer += dt
                 if host_sync_timer > 0.5: 
@@ -2512,9 +2525,24 @@ def apply_screen_mode(window, mode_index):
 def start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprites, player2_sprites, enemy_sprite_dict, tile_surf, wall_surf, lb, network, net_role, mode, mp_name_hint=None, local_two_players=False, bg_obj=None):
     clock = pygame.time.Clock()
     
-    # Stop Menu Music
-    if pygame.mixer.get_init():
-        pygame.mixer.music.stop()
+    # --- NEW MUSIC LOGIC START ---
+    # Stop previous music (Menu music)
+    pygame.mixer.music.stop()
+    
+    # Define and load Game BGM
+    GAME_BGM_PATH = get_asset_path("data", "sfx", "pck404_lets_play.ogg")
+    
+    if os.path.exists(GAME_BGM_PATH):
+        try:
+            pygame.mixer.music.load(GAME_BGM_PATH)
+            # Apply current volume settings immediately
+            pygame.mixer.music.set_volume(settings.music_volume * settings.master_volume)
+            pygame.mixer.music.play(-1) # Loop forever
+        except Exception as e:
+            print(f"Error loading Game BGM: {e}")
+    else:
+        print(f"Game BGM not found at: {GAME_BGM_PATH}")
+    # --- NEW MUSIC LOGIC END ---
 
     local_data = load_save_data()
     local_stats = local_data["upgrades"]
