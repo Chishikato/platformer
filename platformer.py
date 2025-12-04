@@ -33,16 +33,16 @@ BASE_GRAVITY = 1400.0
 BASE_JUMP_VEL = -550.0
 BASE_PLAYER_SPEED = 220.0
 WALL_SLIDE_SPEED = 50.0 
-WALL_JUMP_X = 250.0          
+WALL_JUMP_X = 250.0           
 WALL_JUMP_Y = -450.0        
 
 # Horizontal Scroll Constants
-SCROLL_OFFSET_X = 200.0        
+SCROLL_OFFSET_X = 200.0          
 
-BASE_SLAM_SPEED = 900.0                  
+BASE_SLAM_SPEED = 900.0                    
 BASE_SLAM_COOLDOWN = 1.0                
-SLAM_BASE_RADIUS = 40.0          
-SLAM_RADIUS_PER_HEIGHT = 0.25    
+SLAM_BASE_RADIUS = 40.0            
+SLAM_RADIUS_PER_HEIGHT = 0.25      
 
 TILE_SIZE = 20 
 # Ground level for horizontal play
@@ -72,6 +72,7 @@ MODE_BORDERLESS = 2
 # Game states
 STATE_MAIN_MENU = "main_menu"
 STATE_SETTINGS = "settings"
+STATE_CONTROLS = "controls"
 STATE_GAME = "game"
 STATE_MULTIPLAYER_MENU = "mp_menu"
 STATE_MP_LOBBY = "mp_lobby"  # Create/Join choice
@@ -110,6 +111,17 @@ CHARACTER_ABILITIES = [
     {"name": "Slam", "description": "Instantly slam down, dealing\nmassive damage to enemies below"}
 ]
 
+# DEFAULT KEYBINDINGS
+DEFAULT_KEYBINDS = {
+    "p1_left": pygame.K_a,
+    "p1_right": pygame.K_d,
+    "p1_jump": pygame.K_w, # Alternatively K_SPACE, but defaulting to WASD
+    "p1_slam": pygame.K_s,
+    "p2_left": pygame.K_j,
+    "p2_right": pygame.K_l,
+    "p2_jump": pygame.K_i,
+    "p2_slam": pygame.K_k
+}
 
 # =========================
 # HELPERS
@@ -122,7 +134,7 @@ def lerp(start, end, t):
     return start + t * (end - start)
 
 def draw_text_shadow(surf, font, text, x, y, col=COL_TEXT, shadow_col=COL_SHADOW,
-                      center=False, pulse=False, time_val=0):
+                     center=False, pulse=False, time_val=0):
     offset_y = 0
 
     if pulse:
@@ -235,7 +247,7 @@ def load_save_data():
                     data["credits"] = float(saved["coins"])
                 else:
                     data["credits"] = float(saved.get("credits", 0))
-                  
+                    
                 if "upgrades" in saved:
                     for k in data["upgrades"]:
                         data["upgrades"][k] = saved["upgrades"].get(k, 0)
@@ -558,6 +570,7 @@ class Settings:
         self.sfx_volume = 0.8
         self.target_fps = START_FPS
         self.screen_mode = MODE_WINDOW
+        self.keybinds = DEFAULT_KEYBINDS.copy() # Initialize with defaults
         self.load() # Load settings on initialization
 
     def apply_audio(self):
@@ -570,7 +583,8 @@ class Settings:
             "master_volume": self.master_volume,
             "music_volume": self.music_volume,
             "sfx_volume": self.sfx_volume,
-            "screen_mode": self.screen_mode
+            "screen_mode": self.screen_mode,
+            "keybinds": self.keybinds
         }
         try:
             with open(SETTINGS_FILE, "w") as f:
@@ -588,6 +602,11 @@ class Settings:
                     self.music_volume = data.get("music_volume", 0.5)
                     self.sfx_volume = data.get("sfx_volume", 0.8)
                     self.screen_mode = data.get("screen_mode", MODE_WINDOW)
+                    # Load keybinds, falling back to default if missing
+                    saved_keys = data.get("keybinds", {})
+                    for k, v in saved_keys.items():
+                        if k in self.keybinds:
+                            self.keybinds[k] = v
             except Exception as e:
                 print(f"Error loading settings: {e}")
 
@@ -641,6 +660,110 @@ class Button:
         pygame.draw.rect(surf, border, draw_rect, 2, border_radius=4)
         txt = self.font.render(self.text, False, text_col)
         surf.blit(txt, txt.get_rect(center=draw_rect.center))
+
+class SectionHeader:
+    def __init__(self, x, y, text, font, color=COL_ACCENT_1):
+        self.text = text
+        self.font = font
+        self.color = color
+        # Create a rect for layout calculation, though we won't click it
+        text_surf = font.render(text, True, color)
+        self.rect = text_surf.get_rect(center=(x, y))
+        # Add padding for visual spacing
+        self.rect.height += 20 
+
+    def handle_event(self, event):
+        pass # Headers ignore events, preventing the crash
+
+    def draw(self, surf):
+        # Draw a cool underline
+        line_y = self.rect.centery + 10
+        center_x = self.rect.centerx
+        
+        # Draw text with shadow
+        draw_text_shadow(surf, self.font, self.text, center_x, self.rect.centery - 5, 
+                         center=True, col=self.color)
+        
+        # Neon line fading out to sides
+        width = 200
+        pygame.draw.line(surf, self.color, (center_x - width//2, line_y), (center_x + width//2, line_y), 2)
+
+class KeybindButton:
+    def __init__(self, rect, action_name, key_code, font, update_callback):
+        self.rect = pygame.Rect(rect)
+        self.action_name = action_name
+        self.key_code = key_code
+        self.font = font
+        self.update_callback = update_callback
+        self.listening = False
+        self.hover = False
+        
+    def handle_event(self, event):
+        if self.listening:
+            if event.type == pygame.KEYDOWN:
+                if event.key != pygame.K_ESCAPE:
+                    self.key_code = event.key
+                    self.update_callback(self.key_code)
+                self.listening = False
+            return True # Consume event
+
+        if event.type == pygame.MOUSEMOTION:
+            self.hover = self.rect.collidepoint(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                self.listening = True
+        return False
+
+    def draw(self, surf):
+        # Logic for colors based on state
+        if self.listening:
+            # PULSING PINK GLOW
+            pulse = (math.sin(pygame.time.get_ticks() / 150) + 1) * 0.5 # 0.0 to 1.0
+            border_col = COL_ACCENT_2 # Hot Pink
+            # Interpolate background brightness
+            bg_base = 40
+            bg_add = int(40 * pulse)
+            bg_col = (bg_base + bg_add, 20, 40) # Reddish tint
+            text_col = (255, 200, 200)
+            key_str = "PRESS ANY KEY"
+        else:
+            # STANDARD / HOVER STATE
+            if self.hover:
+                border_col = COL_ACCENT_1 # Cyan
+                bg_col = (30, 30, 50)
+                text_col = (255, 255, 255)
+            else:
+                border_col = (60, 60, 80) # Dark Blue/Grey
+                bg_col = COL_UI_BG
+                text_col = (200, 200, 200)
+            key_str = pygame.key.name(self.key_code).upper()
+
+        # 1. Draw Background Box
+        pygame.draw.rect(surf, bg_col, self.rect, border_radius=6)
+        
+        # 2. Draw Border (Thicker if listening)
+        width = 3 if self.listening else 1
+        pygame.draw.rect(surf, border_col, self.rect, width, border_radius=6)
+
+        # 3. Draw Action Name (Left Side)
+        label_surf = self.font.render(self.action_name, True, (180, 180, 190))
+        surf.blit(label_surf, (self.rect.x + 15, self.rect.centery - label_surf.get_height()//2))
+
+        # 4. Draw Key Name (Right Side)
+        key_surf = self.font.render(key_str, True, border_col) # Key takes the accent color
+        
+        # Add a background pill for the key text for contrast
+        key_bg_rect = key_surf.get_rect(midright=(self.rect.right - 15, self.rect.centery))
+        key_bg_rect.inflate_ip(20, 10) # Add padding
+        
+        # Draw key pill background
+        pygame.draw.rect(surf, (10, 10, 15), key_bg_rect, border_radius=4)
+        if self.listening:
+             pygame.draw.rect(surf, border_col, key_bg_rect, 1, border_radius=4)
+
+        # Blit text centered on the pill
+        key_rect = key_surf.get_rect(center=key_bg_rect.center)
+        surf.blit(key_surf, key_rect)
 
 class Toggle:
     def __init__(self, rect, label, font, options, get_index, set_index):
@@ -2070,6 +2193,10 @@ def main():
     show_kick_confirm = False
     mp_connection_type = "local"  # "local" or "lan"
     
+    # NEW: Keybind UI
+    controls_widgets = []
+    controls_scroll = 0.0
+
     # Initialize with placeholder text
     mp_ip_input = TextInput(pygame.Rect(140, 170, 200, 30), font_small, "", "Enter IP Address...")
     
@@ -2097,7 +2224,7 @@ def main():
 
     def rebuild_main_menu():
         main_buttons.clear()
-        y = 120
+        y = 100
         def add_btn(label, cb, color=COL_UI_BG, accent=COL_ACCENT_1):
             nonlocal y
             rect = pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 40)
@@ -2107,6 +2234,7 @@ def main():
         add_btn("Single Player", lambda: set_state(STATE_CHARACTER_SELECT))
         add_btn("Multiplayer", lambda: set_state(STATE_MP_LOBBY), accent=COL_ACCENT_3)
         add_btn("Shop", lambda: set_state(STATE_SHOP))
+        add_btn("Controls", lambda: set_state(STATE_CONTROLS)) # NEW BUTTON
         add_btn("Settings", lambda: set_state(STATE_SETTINGS))
         add_btn("Quit", lambda: stop(), color=(40, 10, 10))
 
@@ -2219,6 +2347,60 @@ def main():
         add_slider("SFX Volume", lambda: settings.sfx_volume, lambda v: setattr(settings, "sfx_volume", v), 0.0, 1.0)
         add_toggle("Screen Mode", ["Window", "Fullscreen", "Borderless"], lambda: settings.screen_mode, lambda idx: (setattr(settings, "screen_mode", idx), apply_screen_mode(window, idx)))
 
+    def rebuild_controls_menu():
+        nonlocal controls_scroll
+        controls_widgets.clear()
+        controls_scroll = 0.0
+        y = 100
+        
+        widget_width = 400 # Wider buttons look better
+        widget_height = 50 # Taller buttons
+        spacing = 15
+        x_centered = VIRTUAL_W // 2 - widget_width // 2
+
+        def make_update_callback(action_key):
+            def callback(new_code):
+                settings.keybinds[action_key] = new_code
+                # We do not save immediately to avoid lag, saved on exit
+            return callback
+
+        # --- Player 1 Section ---
+        controls_widgets.append(SectionHeader(VIRTUAL_W//2, y, "PLAYER 1 CONFIG", font_big, COL_ACCENT_1))
+        y += 50
+        
+        p1_actions = [("p1_left", "Move Left"), ("p1_right", "Move Right"), ("p1_jump", "Jump / Wall Jump"), ("p1_slam", "Slam Attack")]
+        for key, name in p1_actions:
+            current_code = settings.keybinds.get(key, DEFAULT_KEYBINDS[key])
+            rect = pygame.Rect(x_centered, y, widget_width, widget_height)
+            btn = KeybindButton(rect, name, current_code, font_med, make_update_callback(key))
+            controls_widgets.append(btn)
+            y += widget_height + spacing
+
+        y += 30 # Gap between players
+        
+        # --- Player 2 Section ---
+        controls_widgets.append(SectionHeader(VIRTUAL_W//2, y, "PLAYER 2 CONFIG", font_big, COL_ACCENT_2))
+        y += 50
+        
+        p2_actions = [("p2_left", "Move Left"), ("p2_right", "Move Right"), ("p2_jump", "Jump / Wall Jump"), ("p2_slam", "Slam Attack")]
+        for key, name in p2_actions:
+            current_code = settings.keybinds.get(key, DEFAULT_KEYBINDS[key])
+            rect = pygame.Rect(x_centered, y, widget_width, widget_height)
+            btn = KeybindButton(rect, name, current_code, font_med, make_update_callback(key))
+            controls_widgets.append(btn)
+            y += widget_height + spacing
+
+        y += 20
+        
+        # Reset Defaults Button
+        def reset_defaults():
+            settings.keybinds = DEFAULT_KEYBINDS.copy()
+            rebuild_controls_menu()
+            
+        rect_reset = pygame.Rect(x_centered, y, widget_width, 40)
+        controls_widgets.append(Button(rect_reset, "RESET TO DEFAULTS", font_med, reset_defaults, accent=(255, 80, 80)))
+        y += 80 # padding at bottom
+
     def rebuild_mp_lobby():
         """Initial multiplayer menu: Create Room or Join Room"""
         mp_buttons.clear()
@@ -2226,15 +2408,15 @@ def main():
         y = 150
         # Create Room button
         mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 50), "Create Room", font_med, 
-                                lambda: set_state(STATE_MP_MODE), accent=COL_ACCENT_3))
+                                 lambda: set_state(STATE_MP_MODE), accent=COL_ACCENT_3))
         y += 70
         # Join Room button
         mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 50), "Join Room", font_med, 
-                                lambda: set_state(STATE_MP_ROOM_BROWSER)))
+                                 lambda: set_state(STATE_MP_ROOM_BROWSER)))
         
         # Return button
         mp_buttons.append(Button(pygame.Rect(20, VIRTUAL_H - 50, 80, 30), "Return", font_small, 
-                                lambda: set_state(STATE_MAIN_MENU)))
+                                 lambda: set_state(STATE_MAIN_MENU)))
     
     def rebuild_mp_mode():
         """Choose Local or LAN for room creation"""
@@ -2248,7 +2430,7 @@ def main():
             set_state(STATE_MP_CHARACTER_SELECT)
         
         mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 50), "LOCAL", font_med, 
-                                choose_local, accent=COL_ACCENT_1))
+                                 choose_local, accent=COL_ACCENT_1))
         y += 70
         
         # LAN button
@@ -2259,11 +2441,11 @@ def main():
             set_state(STATE_MP_CHARACTER_SELECT)
         
         mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 50), "LAN", font_med, 
-                                choose_lan, accent=COL_ACCENT_3))
+                                 choose_lan, accent=COL_ACCENT_3))
         
         # Return button
         mp_buttons.append(Button(pygame.Rect(20, VIRTUAL_H - 50, 80, 30), "Return", font_small, 
-                                lambda: set_state(STATE_MP_LOBBY)))
+                                 lambda: set_state(STATE_MP_LOBBY)))
     
     def rebuild_mp_character_select():
         """2-player character selection menu"""
@@ -2382,7 +2564,7 @@ def main():
         
         # Start button (right)
         mp_char_buttons.append(Button(pygame.Rect(420, 380, 140, 45), "START", font_med, 
-                                     start_mp_game, accent=COL_ACCENT_3))
+                                      start_mp_game, accent=COL_ACCENT_3))
     
     def rebuild_mp_room_browser():
         """Server list for joining rooms"""
@@ -2430,6 +2612,7 @@ def main():
         game_state = s
         if s == STATE_MAIN_MENU: rebuild_main_menu()
         elif s == STATE_SETTINGS: rebuild_settings_menu()
+        elif s == STATE_CONTROLS: rebuild_controls_menu()
         elif s == STATE_SHOP: rebuild_shop_menu()
         elif s == STATE_CHARACTER_SELECT: rebuild_character_select()
         elif s == STATE_MULTIPLAYER_MENU: 
@@ -2446,6 +2629,7 @@ def main():
 
     rebuild_main_menu()
     rebuild_settings_menu()
+    rebuild_controls_menu()
     rebuild_mp_menu()
     
     host_sync_timer = 0.0
@@ -2458,8 +2642,8 @@ def main():
         global_anim_timer += dt
 
         # Check Music Status (Restart if stopped by game and back in menu)
-        if game_state in (STATE_MAIN_MENU, STATE_SETTINGS, STATE_SHOP, STATE_MULTIPLAYER_MENU, STATE_LEADERBOARD, 
-                         STATE_CHARACTER_SELECT, STATE_MP_LOBBY, STATE_MP_MODE, STATE_MP_CHARACTER_SELECT, STATE_MP_ROOM_BROWSER):
+        if game_state in (STATE_MAIN_MENU, STATE_SETTINGS, STATE_CONTROLS, STATE_SHOP, STATE_MULTIPLAYER_MENU, STATE_LEADERBOARD, 
+                          STATE_CHARACTER_SELECT, STATE_MP_LOBBY, STATE_MP_MODE, STATE_MP_CHARACTER_SELECT, STATE_MP_ROOM_BROWSER):
             if not pygame.mixer.music.get_busy():
                 play_menu_music()
         
@@ -2529,7 +2713,7 @@ def main():
                 for b in shop_buttons: b.handle_event(ui_event)
                 if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: set_state(STATE_MAIN_MENU)
             elif game_state == STATE_SETTINGS:
-                # UPDATED: Save settings only when exiting the menu
+                # Save settings only when exiting the menu
                 if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: 
                     settings.save()
                     set_state(STATE_MAIN_MENU)
@@ -2538,9 +2722,31 @@ def main():
                 if ui_event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and "pos" in ui_event.dict:
                     sevt = pygame.event.Event(ui_event.type, {**ui_event.dict, "pos": (ui_event.pos[0], ui_event.pos[1] + settings_scroll)})
                 for w in settings_widgets: w.handle_event(sevt)
+            elif game_state == STATE_CONTROLS:
+                # Save settings only when exiting the menu
+                if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: 
+                    settings.save()
+                    set_state(STATE_MAIN_MENU)
+                if raw_event.type == pygame.MOUSEWHEEL: controls_scroll -= raw_event.y * 20
+                sevt = ui_event
+                if ui_event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and "pos" in ui_event.dict:
+                    sevt = pygame.event.Event(ui_event.type, {**ui_event.dict, "pos": (ui_event.pos[0], ui_event.pos[1] + controls_scroll)})
+                
+                # Check for active listener first
+                consumed = False
+                for w in controls_widgets:
+                    if isinstance(w, KeybindButton) and w.listening:
+                        if w.handle_event(sevt): 
+                            consumed = True
+                            break
+                if not consumed:
+                    for w in controls_widgets:
+                        if hasattr(w, "handle_event"):
+                            w.handle_event(sevt)
+
             elif game_state == STATE_MULTIPLAYER_MENU:
                 
-                # --- NEW: Handle Kick Confirmation Modal ---
+                # --- Handle Kick Confirmation Modal ---
                 if show_kick_confirm:
                     if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE:
                         show_kick_confirm = False
@@ -2622,6 +2828,14 @@ def main():
                 max_bottom = max([w.rect.bottom for w in settings_widgets])
                 max_scroll = max(0, max_bottom + 20 - VIRTUAL_H)
                 settings_scroll = clamp(settings_scroll, 0, max_scroll)
+        
+        elif game_state == STATE_CONTROLS:
+            if controls_widgets:
+                bottoms = [w.rect.bottom for w in controls_widgets if hasattr(w, 'rect')]
+                max_bottom = max(bottoms) if bottoms else 0
+                max_scroll = max(0, max_bottom + 20 - VIRTUAL_H)
+                controls_scroll = clamp(controls_scroll, 0, max_scroll)
+
         elif game_state == STATE_MULTIPLAYER_MENU: mp_ip_input.update(dt)
 
         # Rendering
@@ -2702,6 +2916,25 @@ def main():
             back_hint = font_small.render("[ESC] Return", False, (100, 100, 100))
             canvas.blit(back_hint, (10, VIRTUAL_H - 20))
 
+        elif game_state == STATE_CONTROLS:
+            draw_text_shadow(canvas, font_big, "CONTROLS", 20, 20)
+            
+            # Helper text
+            draw_text_shadow(canvas, font_small, "Click to rebind. ESC to cancel.", VIRTUAL_W//2, 50, center=True, col=(150, 150, 180))
+
+            for w in controls_widgets:
+                orig_y = w.rect.y
+                w.rect.y = orig_y - controls_scroll
+                
+                # Draw if visible on screen
+                if w.rect.bottom > 0 and w.rect.top < VIRTUAL_H: 
+                     w.draw(canvas)
+                
+                w.rect.y = orig_y # Restore original Y
+
+            back_hint = font_small.render("[ESC] Save & Return", False, (100, 100, 100))
+            canvas.blit(back_hint, (10, VIRTUAL_H - 20))
+
         elif game_state == STATE_MULTIPLAYER_MENU:
             draw_text_shadow(canvas, font_big, "Network Lobby", 20, 20)
             
@@ -2767,15 +3000,15 @@ def main():
                 if not room_list:
                     canvas.blit(font_small.render("Scanning network...", False, (80, 80, 90)), (230, 180))
                 else:
-                    for i, ip in enumerate(room_list):
+                    for i, (room_ip, room_mode) in enumerate(list(room_list.items())[:6]):  # Show max 6 rooms
                         y_pos = 170 + i * 24
                         if y_pos > 240: break
                         row_rect = pygame.Rect(220, y_pos, 380, 20)
-                        if ip == selected_room:
+                        if room_ip == selected_room:
                             pygame.draw.rect(canvas, (40, 40, 60), row_rect)
                         elif row_rect.collidepoint(pygame.mouse.get_pos()[0] - offset_x, pygame.mouse.get_pos()[1] - offset_y): 
                              pygame.draw.rect(canvas, (30, 30, 40), row_rect)
-                        canvas.blit(font_small.render(f"HOST: {ip}", False, COL_TEXT), (225, y_pos + 2))
+                        canvas.blit(font_small.render(f"HOST: {room_ip}", False, COL_TEXT), (225, y_pos + 2))
 
                 mp_ip_input.draw(canvas)
 
@@ -3015,6 +3248,24 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
     session_credits = 0.0
     waiting_for_seed = (net_role == ROLE_CLIENT)
 
+    # === DYNAMIC KEYBIND HELPER ===
+    kb = settings.keybinds
+    def get_p1_inputs(keys_pressed):
+        return (
+            keys_pressed[kb["p1_left"]],
+            keys_pressed[kb["p1_right"]],
+            keys_pressed[kb["p1_jump"]],
+            keys_pressed[kb["p1_slam"]]
+        )
+        
+    def get_p2_inputs(keys_pressed):
+        return (
+            keys_pressed[kb["p2_left"]],
+            keys_pressed[kb["p2_right"]],
+            keys_pressed[kb["p2_jump"]],
+            keys_pressed[kb["p2_slam"]]
+        )
+
     def render_scene(target_surf, cam_x_now, cam_y_now, highlight_player=None):
         # Use Parallax Background logic (horizontal scroll)
         if bg_obj:
@@ -3157,10 +3408,18 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 
                 # --- UPDATE PLAYERS ---
                 if mode == MODE_SINGLE or net_role != ROLE_LOCAL_ONLY:
-                    local_player.update(dt, level, keys[pygame.K_LEFT] or keys[pygame.K_a], keys[pygame.K_RIGHT] or keys[pygame.K_d], keys[pygame.K_SPACE] or keys[pygame.K_UP] or keys[pygame.K_w], keys[pygame.K_LSHIFT] or keys[pygame.K_s] or keys[pygame.K_DOWN])
+                    # In Network Play (Client or Host) or Single Player:
+                    # The local user controls their character using P1 Keybinds (Standard behavior)
+                    i_left, i_right, i_jump, i_slam = get_p1_inputs(keys)
+                    local_player.update(dt, level, i_left, i_right, i_jump, i_slam)
                 else:
-                    if p1_local and use_p1: p1.update(dt, level, keys[pygame.K_a], keys[pygame.K_d], keys[pygame.K_w] or keys[pygame.K_SPACE], keys[pygame.K_LSHIFT] or keys[pygame.K_s])
-                    if p2_local and use_p2: p2.update(dt, level, keys[pygame.K_j], keys[pygame.K_l], keys[pygame.K_i], keys[pygame.K_RSHIFT] or keys[pygame.K_k])
+                    # Local Multiplayer (Same Keyboard): P1 uses P1 keys, P2 uses P2 keys
+                    if p1_local and use_p1: 
+                        i_left, i_right, i_jump, i_slam = get_p1_inputs(keys)
+                        p1.update(dt, level, i_left, i_right, i_jump, i_slam)
+                    if p2_local and use_p2: 
+                        i_left, i_right, i_jump, i_slam = get_p2_inputs(keys)
+                        p2.update(dt, level, i_left, i_right, i_jump, i_slam)
 
                 # --- CAMERA UPDATE (HORIZONTAL) ---
                 if mode == MODE_VERSUS and net_role == ROLE_LOCAL_ONLY and use_p1 and use_p2:
