@@ -74,8 +74,13 @@ STATE_MAIN_MENU = "main_menu"
 STATE_SETTINGS = "settings"
 STATE_GAME = "game"
 STATE_MULTIPLAYER_MENU = "mp_menu"
+STATE_MP_LOBBY = "mp_lobby"  # Create/Join choice
+STATE_MP_MODE = "mp_mode"  # Local/LAN choice
+STATE_MP_CHARACTER_SELECT = "mp_char_select"  # 2-player character select
+STATE_MP_ROOM_BROWSER = "mp_room_browser"  # Server list for joining
 STATE_LEADERBOARD = "leaderboard"
 STATE_SHOP = "shop"
+STATE_CHARACTER_SELECT = "character_select"
 
 # Multiplayer roles
 ROLE_LOCAL_ONLY = "local"
@@ -89,6 +94,21 @@ MODE_VERSUS = "versus"
 # UDP Discovery
 DISCOVERY_PORT = 50008
 DISCOVERY_MSG = b"PLATFORMER_HOST_HERE"
+
+# Character Selection
+CHARACTER_COLORS = [
+    {"name": "Pink", "row": 0},
+    {"name": "Red", "row": 1},
+    {"name": "Orange", "row": 2},
+    {"name": "Blue", "row": 3},
+    {"name": "Green", "row": 4},
+    {"name": "Brown", "row": 5},
+    {"name": "Grey", "row": 6}
+]
+
+CHARACTER_ABILITIES = [
+    {"name": "Slam", "description": "Instantly slam down, dealing\nmassive damage to enemies below"}
+]
 
 
 # =========================
@@ -754,7 +774,7 @@ class TextInput:
 
 class RoomScanner:
     def __init__(self):
-        self.found_hosts = []
+        self.found_hosts = {}  # Changed to dict: {ip: mode}
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         try: self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -762,17 +782,28 @@ class RoomScanner:
         self.sock.setblocking(False)
         try: self.sock.bind(("", DISCOVERY_PORT))
         except: pass
+        self.broadcast_mode = MODE_VERSUS  # Store mode to broadcast
     
-    def broadcast(self):
-        try: self.sock.sendto(DISCOVERY_MSG, ("<broadcast>", DISCOVERY_PORT))
+    def broadcast(self, mode=None):
+        if mode:
+            self.broadcast_mode = mode
+        # Send mode with discovery message
+        msg = DISCOVERY_MSG + b":" + self.broadcast_mode.encode('utf-8')
+        try: self.sock.sendto(msg, ("<broadcast>", DISCOVERY_PORT))
         except: pass
 
     def listen(self):
         try:
             while True:
                 data, addr = self.sock.recvfrom(1024)
-                if data == DISCOVERY_MSG:
-                    if addr[0] not in self.found_hosts: self.found_hosts.append(addr[0])
+                if data.startswith(DISCOVERY_MSG):
+                    # Parse mode from message
+                    try:
+                        parts = data.decode('utf-8').split(':')
+                        mode = parts[1] if len(parts) > 1 else MODE_VERSUS
+                    except:
+                        mode = MODE_VERSUS
+                    self.found_hosts[addr[0]] = mode
         except BlockingIOError: pass
         except Exception: pass
 
@@ -824,7 +855,7 @@ class NetworkManager:
         self.broadcasting = True
         def broadcast_loop():
             while self.hosting:
-                if self.broadcasting and not self.connected: self.scanner.broadcast()
+                if self.broadcasting and not self.connected: self.scanner.broadcast(self.remote_lobby_mode or MODE_VERSUS)
                 time.sleep(1.0)
         t = threading.Thread(target=broadcast_loop, daemon=True)
         t.start()
@@ -1865,6 +1896,45 @@ class LevelManager:
         for e in self.enemies: e.draw(surf, cam_x, cam_y)
 
 # =========================
+# CHARACTER SELECTION
+# =========================
+def load_character_sprites(slime_path, color_row):
+    """Load all sprite animations for a specific color row."""
+    idle_main = load_sprite_sheet(os.path.join(slime_path, "slime_idle1.png"), 2, 7, color_row)
+    idle_alt1 = load_sprite_sheet(os.path.join(slime_path, "slime_idle2.png"), 7, 7, color_row)
+    idle_alt2 = load_sprite_sheet(os.path.join(slime_path, "slime_idle3.png"), 7, 7, color_row)
+    jump_frames = load_sprite_sheet(os.path.join(slime_path, "slime_jump.png"), 11, 7, color_row)
+
+    return {
+        "idle_main": idle_main,
+        "idle_alt1": idle_alt1,
+        "idle_alt2": idle_alt2,
+        "move": load_sprite_sheet(os.path.join(slime_path, "slime_move.png"), 7, 7, color_row),
+        "jump": jump_frames,
+        "fall": jump_frames,
+        "slam_frames": jump_frames,
+        "hit": load_sprite_sheet(os.path.join(slime_path, "slime_hit.png"), 2, 7, color_row),
+        "die": load_sprite_sheet(os.path.join(slime_path, "slime_die.png"), 13, 7, color_row),
+        "swallow": load_sprite_sheet(os.path.join(slime_path, "slime_swallow.png"), 14, 7, color_row)
+    }
+
+def draw_character_preview(surf, sprites, anim_time, center_x, center_y):
+    """Draw animated character preview."""
+    # Use idle_main animation for preview
+    frames = sprites.get("idle_main", [])
+    if not frames:
+        return
+    
+    # Animate through frames
+    frame_rate = 0.2  # seconds per frame
+    frame_index = int(anim_time / frame_rate) % len(frames)
+    frame = frames[frame_index]
+    
+    # Draw the frame centered at the position
+    rect = frame.get_rect(center=(center_x, center_y))
+    surf.blit(frame, rect)
+
+# =========================
 # MAIN GAME LOOP
 # =========================
 def main():
@@ -1998,14 +2068,32 @@ def main():
     mp_buttons = []
     mp_mode = MODE_VERSUS
     show_kick_confirm = False
+    mp_connection_type = "local"  # "local" or "lan"
     
     # Initialize with placeholder text
     mp_ip_input = TextInput(pygame.Rect(140, 170, 200, 30), font_small, "", "Enter IP Address...")
     
-    room_list = []
+    room_list = {}  # Dict of {ip: mode}
     selected_room = None
     
     global_anim_timer = 0.0
+    
+    # Character Selection State
+    char_select_buttons = []
+    selected_color_index = 3  # Default to Blue
+    selected_ability_index = 0  # Default to Slam
+    char_preview_sprites = None
+    char_preview_time = 0.0
+    
+    # Multiplayer Character Selection State
+    mp_char_buttons = []
+    p1_color_index = 3  # Default to Blue
+    p1_ability_index = 0
+    p2_color_index = 1  # Default to Red
+    p2_ability_index = 0
+    p1_preview_sprites = None
+    p2_preview_sprites = None
+    mp_char_preview_time = 0.0
 
     def rebuild_main_menu():
         main_buttons.clear()
@@ -2016,11 +2104,60 @@ def main():
             main_buttons.append(Button(rect, label, font_med, cb, color=color, accent=accent))
             y += 50
         
-        add_btn("Single Player", lambda: start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, MODE_SINGLE, None, local_two_players=False, bg_obj=night_bg))
-        add_btn("Multiplayer", lambda: set_state(STATE_MULTIPLAYER_MENU), accent=COL_ACCENT_3)
+        add_btn("Single Player", lambda: set_state(STATE_CHARACTER_SELECT))
+        add_btn("Multiplayer", lambda: set_state(STATE_MP_LOBBY), accent=COL_ACCENT_3)
         add_btn("Shop", lambda: set_state(STATE_SHOP))
         add_btn("Settings", lambda: set_state(STATE_SETTINGS))
         add_btn("Quit", lambda: stop(), color=(40, 10, 10))
+
+    def rebuild_character_select():
+        nonlocal char_preview_sprites
+        char_select_buttons.clear()
+        
+        # Load sprites for the currently selected color
+        color_row = CHARACTER_COLORS[selected_color_index]["row"]
+        char_preview_sprites = load_character_sprites(slime_path, color_row)
+        
+        # Arrow buttons for color selection
+        def prev_color():
+            nonlocal selected_color_index
+            selected_color_index = (selected_color_index - 1) % len(CHARACTER_COLORS)
+            rebuild_character_select()
+        
+        def next_color():
+            nonlocal selected_color_index
+            selected_color_index = (selected_color_index + 1) % len(CHARACTER_COLORS)
+            rebuild_character_select()
+        
+        # Arrow buttons for ability selection
+        def prev_ability():
+            nonlocal selected_ability_index
+            selected_ability_index = (selected_ability_index - 1) % len(CHARACTER_ABILITIES)
+        
+        def next_ability():
+            nonlocal selected_ability_index
+            selected_ability_index = (selected_ability_index + 1) % len(CHARACTER_ABILITIES)
+        
+        # Start game with selected character
+        def start_with_selection():
+            # Create custom sprite dict for selected color
+            custom_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[selected_color_index]["row"])
+            start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, 
+                             custom_sprites, player2_sprite, enemy_sprite_dict, tile_surf, 
+                             wall_surf, lb, network, ROLE_LOCAL_ONLY, MODE_SINGLE, None, 
+                             local_two_players=False, bg_obj=night_bg)
+        
+        # Color selector arrows (positioned below the preview)
+        char_select_buttons.append(Button(pygame.Rect(180, 220, 40, 35), "<", font_med, prev_color))
+        char_select_buttons.append(Button(pygame.Rect(420, 220, 40, 35), ">", font_med, next_color))
+        
+        # Ability selector arrows
+        char_select_buttons.append(Button(pygame.Rect(180, 290, 40, 35), "<", font_med, prev_ability))
+        char_select_buttons.append(Button(pygame.Rect(420, 290, 40, 35), ">", font_med, next_ability))
+        
+        # Bottom buttons
+        char_select_buttons.append(Button(pygame.Rect(110, 380, 140, 45), "RETURN", font_med, lambda: set_state(STATE_MAIN_MENU)))
+        char_select_buttons.append(Button(pygame.Rect(390, 380, 140, 45), "START", font_med, start_with_selection, accent=COL_ACCENT_3))
 
     def rebuild_shop_menu():
         shop_buttons.clear()
@@ -2082,126 +2219,207 @@ def main():
         add_slider("SFX Volume", lambda: settings.sfx_volume, lambda v: setattr(settings, "sfx_volume", v), 0.0, 1.0)
         add_toggle("Screen Mode", ["Window", "Fullscreen", "Borderless"], lambda: settings.screen_mode, lambda idx: (setattr(settings, "screen_mode", idx), apply_screen_mode(window, idx)))
 
-    def rebuild_mp_menu():
+    def rebuild_mp_lobby():
+        """Initial multiplayer menu: Create Room or Join Room"""
         mp_buttons.clear()
         
-        # ==============================
-        # HOST LOBBY VIEW
-        # ==============================
-        if network.role == ROLE_HOST:
-            # --- LEFT PANEL ---
-            mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Room: HOST", font_med, None, color=COL_ACCENT_1))
-            mp_buttons.append(Button(pygame.Rect(30, 120, 160, 30), "Invite Players", font_small, lambda: print("Invite clicked")))
-
-            def trigger_kick_confirm():
-                nonlocal show_kick_confirm
-                show_kick_confirm = True
-
-            kick_btn = Button(pygame.Rect(30, 160, 160, 30), "Kick Player", font_small, trigger_kick_confirm, color=(60, 20, 20))
+        y = 150
+        # Create Room button
+        mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 50), "Create Room", font_med, 
+                                lambda: set_state(STATE_MP_MODE), accent=COL_ACCENT_3))
+        y += 70
+        # Join Room button
+        mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 50), "Join Room", font_med, 
+                                lambda: set_state(STATE_MP_ROOM_BROWSER)))
+        
+        # Return button
+        mp_buttons.append(Button(pygame.Rect(20, VIRTUAL_H - 50, 80, 30), "Return", font_small, 
+                                lambda: set_state(STATE_MAIN_MENU)))
+    
+    def rebuild_mp_mode():
+        """Choose Local or LAN for room creation"""
+        mp_buttons.clear()
+        
+        y = 150
+        # Local button
+        def choose_local():
+            nonlocal mp_connection_type
+            mp_connection_type = "local"
+            set_state(STATE_MP_CHARACTER_SELECT)
+        
+        mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 50), "LOCAL", font_med, 
+                                choose_local, accent=COL_ACCENT_1))
+        y += 70
+        
+        # LAN button
+        def choose_lan():
+            nonlocal mp_connection_type
+            mp_connection_type = "lan"
+            network.host()  # Start hosting
+            set_state(STATE_MP_CHARACTER_SELECT)
+        
+        mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 100, y, 200, 50), "LAN", font_med, 
+                                choose_lan, accent=COL_ACCENT_3))
+        
+        # Return button
+        mp_buttons.append(Button(pygame.Rect(20, VIRTUAL_H - 50, 80, 30), "Return", font_small, 
+                                lambda: set_state(STATE_MP_LOBBY)))
+    
+    def rebuild_mp_character_select():
+        """2-player character selection menu"""
+        nonlocal p1_preview_sprites, p2_preview_sprites
+        mp_char_buttons.clear()
+        
+        # Load preview sprites
+        p1_preview_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[p1_color_index]["row"])
+        p2_preview_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[p2_color_index]["row"])
+        
+        # P1 Color arrows
+        def p1_prev_color():
+            nonlocal p1_color_index
+            p1_color_index = (p1_color_index - 1) % len(CHARACTER_COLORS)
+            rebuild_mp_character_select()
+        
+        def p1_next_color():
+            nonlocal p1_color_index
+            p1_color_index = (p1_color_index + 1) % len(CHARACTER_COLORS)
+            rebuild_mp_character_select()
+        
+        # P1 Ability arrows
+        def p1_prev_ability():
+            nonlocal p1_ability_index
+            p1_ability_index = (p1_ability_index - 1) % len(CHARACTER_ABILITIES)
+        
+        def p1_next_ability():
+            nonlocal p1_ability_index
+            p1_ability_index = (p1_ability_index + 1) % len(CHARACTER_ABILITIES)
+        
+        # P2 Color arrows (only for local mode)
+        def p2_prev_color():
+            nonlocal p2_color_index
+            if mp_connection_type == "local":
+                p2_color_index = (p2_color_index - 1) % len(CHARACTER_COLORS)
+                rebuild_mp_character_select()
+        
+        def p2_next_color():
+            nonlocal p2_color_index
+            if mp_connection_type == "local":
+                p2_color_index = (p2_color_index + 1) % len(CHARACTER_COLORS)
+                rebuild_mp_character_select()
+        
+        # P2 Ability arrows (only for local mode)
+        def p2_prev_ability():
+            nonlocal p2_ability_index
+            if mp_connection_type == "local":
+                p2_ability_index = (p2_ability_index - 1) % len(CHARACTER_ABILITIES)
+        
+        def p2_next_ability():
+            nonlocal p2_ability_index
+            if mp_connection_type == "local":
+                p2_ability_index = (p2_ability_index + 1) % len(CHARACTER_ABILITIES)
+        
+        # P1 buttons (left side)
+        p1_x = 210  # Match P1 center position
+        mp_char_buttons.append(Button(pygame.Rect(p1_x - 70, 220, 40, 35), "<", font_med, p1_prev_color))
+        mp_char_buttons.append(Button(pygame.Rect(p1_x + 30, 220, 40, 35), ">", font_med, p1_next_color))
+        mp_char_buttons.append(Button(pygame.Rect(p1_x - 70, 290, 40, 35), "<", font_med, p1_prev_ability))
+        mp_char_buttons.append(Button(pygame.Rect(p1_x + 30, 290, 40, 35), ">", font_med, p1_next_ability))
+        
+        # P2 buttons (right side) - only enabled for local
+        p2_x = 430  # Match P2 center position
+        p2_color_left = Button(pygame.Rect(p2_x - 70, 220, 40, 35), "<", font_med, p2_prev_color)
+        p2_color_right = Button(pygame.Rect(p2_x + 30, 220, 40, 35), ">", font_med, p2_next_color)
+        p2_ability_left = Button(pygame.Rect(p2_x - 70, 290, 40, 35), "<", font_med, p2_prev_ability)
+        p2_ability_right = Button(pygame.Rect(p2_x + 30, 290, 40, 35), ">", font_med, p2_next_ability)
+        
+        if mp_connection_type != "local":
+            # Grey out P2 buttons for LAN mode
+            p2_color_left.disabled = True
+            p2_color_right.disabled = True
+            p2_ability_left.disabled = True
+            p2_ability_right.disabled = True
+        
+        mp_char_buttons.extend([p2_color_left, p2_color_right, p2_ability_left, p2_ability_right])
+        
+        # Start game button
+        def start_mp_game():
+            p1_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[p1_color_index]["row"])
+            p2_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[p2_color_index]["row"])
             
-            # Only enable kick button if someone is actually connected
-            if not network.connected:
-                kick_btn.disabled = True
-                kick_btn.base_color = (40, 20, 20) # Dimmed
-            
-            mp_buttons.append(kick_btn)
-            mp_buttons.append(Button(pygame.Rect(30, 270, 160, 30), "Disband Lobby", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(80, 10, 10)))
-
-            # --- RIGHT PANEL (Controls) ---
-            def toggle_mode():
-                nonlocal mp_mode
-                mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
-                if network.role == ROLE_HOST: network.send_lobby_mode(mp_mode)
-                rebuild_mp_menu()
-            
-            mode_txt = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Race'}"
-            mp_buttons.append(Button(pygame.Rect(220, 70, 230, 30), mode_txt, font_small, toggle_mode))
-
-            mp_buttons.append(Button(pygame.Rect(220, 285, 140, 30), "Leave", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 60, 70)))
-
-            def host_start_action():
-                if not network.connected: return
-                network.send_start_game()
-                time.sleep(0.2)
-                start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, network.role, mp_mode, mp_ip_input.text, network.role == ROLE_LOCAL_ONLY, bg_obj=night_bg)
-            
-            start_btn = Button(pygame.Rect(460, 285, 140, 30), "Start Match", font_small, host_start_action, accent=COL_ACCENT_2)
-            if not network.connected:
-                start_btn.disabled = True
-                start_btn.text = "Waiting..."
-            mp_buttons.append(start_btn)
-
-        # ==============================
-        # CONNECTED CLIENT LOBBY VIEW
-        # ==============================
-        elif network.role == ROLE_CLIENT and network.connected:
-            # --- LEFT PANEL ---
-            mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Room: CLIENT", font_med, None, color=COL_ACCENT_3))
-            mp_buttons.append(Button(pygame.Rect(30, 170, 160, 30), "Disconnect", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 20, 20)))
-
-            # --- RIGHT PANEL (Visuals only - Disabled/Overlayed) ---
-            
-            # Mode Toggle (Dummy - Visual only so it appears under the box)
-            mode_txt = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Race'}"
-            dummy_mode = Button(pygame.Rect(220, 70, 230, 30), mode_txt, font_small, None) 
-            dummy_mode.disabled = True # Disable interaction
-            mp_buttons.append(dummy_mode)
-
-            # Leave Button (Still functional for client)
-            mp_buttons.append(Button(pygame.Rect(220, 285, 140, 30), "Leave", font_small, lambda: (network.close(), rebuild_mp_menu()), color=(60, 60, 70)))
-
-            # Start Match (Dummy - Visual only)
-            dummy_start = Button(pygame.Rect(460, 285, 140, 30), "Start Match", font_small, None, accent=COL_ACCENT_2)
-            dummy_start.disabled = True
-            mp_buttons.append(dummy_start)
-
-        # ==============================
-        # BROWSER VIEW (Disconnected)
-        # ==============================
-        else:
-            # Left Panel
-            mp_buttons.append(Button(pygame.Rect(30, 70, 160, 40), "Host Game", font_med, lambda: (network.host(), rebuild_mp_menu())))
-
-            # Right Panel
-            def toggle_mode():
-                nonlocal mp_mode
-                mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
-                rebuild_mp_menu()
-            
-            mode_txt = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Race'}"
-            mp_buttons.append(Button(pygame.Rect(220, 70, 230, 30), mode_txt, font_small, toggle_mode))
-
-            def play_local():
-                network.close() 
-                start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, player1_sprite, player2_sprite, enemy_sprite_dict, tile_surf, wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, local_two_players=True, bg_obj=night_bg)
-            mp_buttons.append(Button(pygame.Rect(460, 70, 140, 30), "Play Local", font_small, play_local, accent=COL_ACCENT_3))
-
-            mp_ip_input.rect = pygame.Rect(220, 110, 220, 30)
-            mp_buttons.append(Button(pygame.Rect(450, 110, 50, 30), "Paste", font_small, lambda: mp_ip_input.paste_text()))
-            mp_buttons.append(Button(pygame.Rect(510, 110, 90, 30), "Connect", font_small, lambda: network.join(mp_ip_input.text.strip())))
-            mp_ip_input.on_enter = lambda text: network.join(text.strip())
-
-            def join_selected():
-                target = selected_room
-                if not target and mp_ip_input.text:
-                    target = mp_ip_input.text.strip()
-                    
-                if target:
-                    mp_ip_input.text = target
-                    network.join(target)
-                    
-            btn_y = 285 
-            mp_buttons.append(Button(pygame.Rect(220, btn_y, 230, 30), "Join Selected", font_small, join_selected))
-
-            def refresh_action():
-                nonlocal selected_room
-                network.scanner.found_hosts.clear()
-                room_list.clear()
-                selected_room = None     # Unselect the item
-                mp_ip_input.text = ""    # Clear the input box too since selection fills it
-            
-            mp_buttons.append(Button(pygame.Rect(460, btn_y, 140, 30), "Refresh", font_small, refresh_action))
-            mp_buttons.append(Button(pygame.Rect(20, VIRTUAL_H - 50, 80, 30), "Back", font_small, lambda: (network.close(), set_state(STATE_MAIN_MENU))))
+            if mp_connection_type == "local":
+                # Local multiplayer
+                start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, 
+                                 p1_sprites, p2_sprites, enemy_sprite_dict, tile_surf, 
+                                 wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, 
+                                 local_two_players=True, bg_obj=night_bg)
+            else:
+                # LAN multiplayer - wait for other player or start if connected
+                if network.connected:
+                    network.send_start_game()
+                    time.sleep(0.2)
+                start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, 
+                                 p1_sprites, p2_sprites, enemy_sprite_dict, tile_surf, 
+                                 wall_surf, lb, network, network.role, mp_mode, None, 
+                                 local_two_players=False, bg_obj=night_bg)
+        
+        # Bottom buttons
+        # Return button (left)
+        def return_action():
+            if mp_connection_type == "lan":
+                network.close()
+            set_state(STATE_MP_MODE)
+        
+        mp_char_buttons.append(Button(pygame.Rect(80, 380, 140, 45), "RETURN", font_med, return_action))
+        
+        # Mode toggle button (center)
+        def toggle_mp_mode():
+            nonlocal mp_mode
+            mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
+            rebuild_mp_character_select()
+        
+        mode_text = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Versus'}"
+        mp_char_buttons.append(Button(pygame.Rect(250, 380, 140, 45), mode_text, font_med, toggle_mp_mode))
+        
+        # Start button (right)
+        mp_char_buttons.append(Button(pygame.Rect(420, 380, 140, 45), "START", font_med, 
+                                     start_mp_game, accent=COL_ACCENT_3))
+    
+    def rebuild_mp_room_browser():
+        """Server list for joining rooms"""
+        mp_buttons.clear()
+        
+        # Refresh button
+        def refresh_action():
+            nonlocal selected_room
+            network.scanner.found_hosts = {}
+            nonlocal room_list
+            room_list = {}
+            selected_room = None
+        
+        # Return button (left)
+        mp_buttons.append(Button(pygame.Rect(80, VIRTUAL_H - 70, 140, 40), 
+                                "Return", font_med, lambda: (network.close(), set_state(STATE_MP_LOBBY))))
+        
+        # Refresh button (center)
+        mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 70, VIRTUAL_H - 70, 140, 40), 
+                                "Refresh", font_med, refresh_action))
+        
+        # Join Room button (right) - disabled if no room selected
+        def join_room_action():
+            if selected_room:
+                network.join(selected_room)
+        
+        join_btn = Button(pygame.Rect(VIRTUAL_W - 220, VIRTUAL_H - 70, 140, 40), 
+                         "Join Room", font_med, join_room_action, accent=COL_ACCENT_3)
+        
+        if not selected_room:
+            join_btn.disabled = True
+        
+        mp_buttons.append(join_btn)
+    
+    # This function is kept for backward compatibility but now just calls rebuild_mp_lobby
+    def rebuild_mp_menu():
+        rebuild_mp_lobby()
 
     def set_state(s):
         nonlocal game_state
@@ -2213,9 +2431,16 @@ def main():
         if s == STATE_MAIN_MENU: rebuild_main_menu()
         elif s == STATE_SETTINGS: rebuild_settings_menu()
         elif s == STATE_SHOP: rebuild_shop_menu()
+        elif s == STATE_CHARACTER_SELECT: rebuild_character_select()
         elif s == STATE_MULTIPLAYER_MENU: 
             network.scanner.found_hosts = []
             rebuild_mp_menu()
+        elif s == STATE_MP_LOBBY: rebuild_mp_lobby()
+        elif s == STATE_MP_MODE: rebuild_mp_mode()
+        elif s == STATE_MP_CHARACTER_SELECT: rebuild_mp_character_select()
+        elif s == STATE_MP_ROOM_BROWSER: 
+            network.scanner.found_hosts = []
+            rebuild_mp_room_browser()
     
     def stop(): nonlocal running; running = False
 
@@ -2233,9 +2458,18 @@ def main():
         global_anim_timer += dt
 
         # Check Music Status (Restart if stopped by game and back in menu)
-        if game_state in (STATE_MAIN_MENU, STATE_SETTINGS, STATE_SHOP, STATE_MULTIPLAYER_MENU, STATE_LEADERBOARD):
+        if game_state in (STATE_MAIN_MENU, STATE_SETTINGS, STATE_SHOP, STATE_MULTIPLAYER_MENU, STATE_LEADERBOARD, 
+                         STATE_CHARACTER_SELECT, STATE_MP_LOBBY, STATE_MP_MODE, STATE_MP_CHARACTER_SELECT, STATE_MP_ROOM_BROWSER):
             if not pygame.mixer.music.get_busy():
                 play_menu_music()
+        
+        # Update character preview animation
+        if game_state == STATE_CHARACTER_SELECT:
+            char_preview_time += dt
+        
+        # Update MP character preview animation
+        if game_state == STATE_MP_CHARACTER_SELECT:
+            mp_char_preview_time += dt
         
         # Handle Window Scaling (Maintain Aspect Ratio)
         win_w, win_h = window.get_size()
@@ -2243,6 +2477,12 @@ def main():
         scaled_w, scaled_h = int(VIRTUAL_W * scale), int(VIRTUAL_H * scale)
         offset_x, offset_y = (win_w - scaled_w) // 2, (win_h - scaled_h) // 2
 
+        # Handle room browser scanning
+        if game_state == STATE_MP_ROOM_BROWSER:
+            network.scanner.listen()
+            current_hosts = network.scanner.found_hosts
+            if current_hosts != room_list: room_list = dict(current_hosts)
+        
         if game_state == STATE_MULTIPLAYER_MENU:
             network.scanner.listen()
             current_hosts = network.scanner.found_hosts
@@ -2282,6 +2522,9 @@ def main():
 
             if game_state == STATE_MAIN_MENU:
                 for b in main_buttons: b.handle_event(ui_event)
+            elif game_state == STATE_CHARACTER_SELECT:
+                for b in char_select_buttons: b.handle_event(ui_event)
+                if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: set_state(STATE_MAIN_MENU)
             elif game_state == STATE_SHOP:
                 for b in shop_buttons: b.handle_event(ui_event)
                 if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: set_state(STATE_MAIN_MENU)
@@ -2337,6 +2580,42 @@ def main():
 
                     for b in mp_buttons: b.handle_event(ui_event)
                     mp_ip_input.handle_event(ui_event)
+            
+            elif game_state == STATE_MP_LOBBY:
+                for b in mp_buttons: b.handle_event(ui_event)
+                if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: set_state(STATE_MAIN_MENU)
+            
+            elif game_state == STATE_MP_MODE:
+                for b in mp_buttons: b.handle_event(ui_event)
+                if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: set_state(STATE_MP_LOBBY)
+            
+            elif game_state == STATE_MP_CHARACTER_SELECT:
+                for b in mp_char_buttons: b.handle_event(ui_event)
+                if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: 
+                    if mp_connection_type == "lan":
+                        network.close()
+                    set_state(STATE_MP_MODE)
+            
+            elif game_state == STATE_MP_ROOM_BROWSER:
+                # Handle room selection clicks
+                if ui_event.type == pygame.MOUSEBUTTONDOWN and ui_event.button == 1:
+                    if "pos" in ui_event.dict:
+                        mx, my = ui_event.pos
+                        # Server list area
+                        list_rect = pygame.Rect(50, 70, VIRTUAL_W - 100, 250)
+                        if list_rect.collidepoint(mx, my):
+                            row_height = 40
+                            index = int((my - 70) / row_height)
+                            room_ips = list(room_list.keys())
+                            if 0 <= index < len(room_ips):
+                                selected_room = room_ips[index]
+                                # Rebuild to update Join button state
+                                rebuild_mp_room_browser()
+                
+                for b in mp_buttons: b.handle_event(ui_event)
+                if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: 
+                    network.close()
+                    set_state(STATE_MP_LOBBY)
 
         if game_state == STATE_SETTINGS:
             if settings_widgets:
@@ -2353,6 +2632,43 @@ def main():
             day_bg.draw(canvas, menu_scroll_x) # Use Day Parallax
             draw_text_shadow(canvas, font_big, GAME_TITLE, VIRTUAL_W//2, 60, center=True, pulse=True, time_val=global_anim_timer)
             for b in main_buttons: b.draw(canvas, dt)
+        
+        elif game_state == STATE_CHARACTER_SELECT:
+            # Draw background
+            menu_scroll_x += dt * 60
+            day_bg.draw(canvas, menu_scroll_x)
+            
+            # Draw title
+            draw_text_shadow(canvas, font_big, "Character Select", VIRTUAL_W//2, 40, center=True)
+            
+            # Draw character preview circle background
+            preview_center_x = VIRTUAL_W // 2
+            preview_center_y = 140
+            pygame.draw.circle(canvas, COL_UI_BG, (preview_center_x, preview_center_y), 60)
+            pygame.draw.circle(canvas, COL_ACCENT_1, (preview_center_x, preview_center_y), 60, 3)
+            
+            # Draw animated character preview
+            if char_preview_sprites:
+                draw_character_preview(canvas, char_preview_sprites, char_preview_time, preview_center_x, preview_center_y)
+            
+            # Draw color selection section
+            color_name = CHARACTER_COLORS[selected_color_index]["name"]
+            draw_text_shadow(canvas, font_med, f"{color_name}", VIRTUAL_W//2, 237, center=True, col=COL_ACCENT_1)
+            
+            # Draw ability selection section
+            ability = CHARACTER_ABILITIES[selected_ability_index]
+            draw_text_shadow(canvas, font_med, f"{ability['name']}", VIRTUAL_W//2, 307, center=True, col=COL_ACCENT_1)
+            
+            # Draw ability description box
+            desc_panel = pygame.Rect(VIRTUAL_W//2 - 150, 330, 300, 45)
+            draw_panel(canvas, desc_panel)
+            # Draw multi-line description
+            desc_lines = ability['description'].split('\n')
+            for i, line in enumerate(desc_lines):
+                draw_text_shadow(canvas, font_small, line, VIRTUAL_W//2, 340 + i * 14, center=True, col=COL_TEXT)
+            
+            # Draw buttons
+            for b in char_select_buttons: b.draw(canvas, dt)
         
         elif game_state == STATE_SHOP:
             draw_text_shadow(canvas, font_big, "Cybernetic Upgrades", 20, 20, col=COL_ACCENT_3)
@@ -2503,6 +2819,104 @@ def main():
                 pygame.draw.rect(canvas, (100, 100, 120), no_rect, 2, border_radius=4)
                 txt_no = font_small.render("CANCEL", False, COL_TEXT)
                 canvas.blit(txt_no, txt_no.get_rect(center=no_rect.center))
+        
+        elif game_state == STATE_MP_LOBBY:
+            # Simple menu with Create Room / Join Room
+            menu_scroll_x += dt * 60
+            day_bg.draw(canvas, menu_scroll_x)
+            draw_text_shadow(canvas, font_big, "Multiplayer", VIRTUAL_W//2, 60, center=True, pulse=True, time_val=global_anim_timer)
+            for b in mp_buttons: b.draw(canvas, dt)
+        
+        elif game_state == STATE_MP_MODE:
+            # Local vs LAN choice
+            menu_scroll_x += dt * 60
+            day_bg.draw(canvas, menu_scroll_x)
+            draw_text_shadow(canvas, font_big, "Choose Mode", VIRTUAL_W//2, 60, center=True)
+            for b in mp_buttons: b.draw(canvas, dt)
+        
+        elif game_state == STATE_MP_CHARACTER_SELECT:
+            # 2-player character selection
+            menu_scroll_x += dt * 60
+            day_bg.draw(canvas, menu_scroll_x)
+            draw_text_shadow(canvas, font_big, "Character Select", VIRTUAL_W//2, 40, center=True)
+            
+            # P1 (Left side)
+            p1_center_x = 210
+            p1_center_y = 140
+            pygame.draw.circle(canvas, COL_UI_BG, (p1_center_x, p1_center_y), 50)
+            pygame.draw.circle(canvas, COL_ACCENT_1, (p1_center_x, p1_center_y), 50, 3)
+            if p1_preview_sprites:
+                draw_character_preview(canvas, p1_preview_sprites, mp_char_preview_time, p1_center_x, p1_center_y)
+            draw_text_shadow(canvas, font_small, "P1", p1_center_x, 90, center=True, col=COL_ACCENT_1)
+            
+            # P1 selections
+            p1_color = CHARACTER_COLORS[p1_color_index]["name"]
+            p1_ability = CHARACTER_ABILITIES[p1_ability_index]["name"]
+            draw_text_shadow(canvas, font_med, f"{p1_color}", p1_center_x, 237, center=True, col=COL_ACCENT_1)
+            draw_text_shadow(canvas, font_med, f"{p1_ability}", p1_center_x, 307, center=True, col=COL_ACCENT_1)
+            
+            # P2 (Right side)
+            p2_center_x = 430
+            p2_center_y = 140
+            
+            if mp_connection_type == "lan":
+                # Grey out for LAN, show "Waiting for player..."
+                pygame.draw.circle(canvas, (30, 30, 40), (p2_center_x, p2_center_y), 50)
+                pygame.draw.circle(canvas, (80, 80, 90), (p2_center_x, p2_center_y), 50, 3)
+                draw_text_shadow(canvas, font_small, "P2", p2_center_x, 90, center=True, col=(100, 100, 110))
+                draw_text_shadow(canvas, font_small, "Waiting for player...", p2_center_x, p2_center_y, center=True, col=(150, 150, 160))
+                # Grey selections
+                draw_text_shadow(canvas, font_med, "---", p2_center_x, 237, center=True, col=(80, 80, 90))
+                draw_text_shadow(canvas, font_med, "---", p2_center_x, 307, center=True, col=(80, 80, 90))
+            else:
+                # Local mode - show P2 normally
+                pygame.draw.circle(canvas, COL_UI_BG, (p2_center_x, p2_center_y), 50)
+                pygame.draw.circle(canvas, COL_ACCENT_2, (p2_center_x, p2_center_y), 50, 3)
+                if p2_preview_sprites:
+                    draw_character_preview(canvas, p2_preview_sprites, mp_char_preview_time, p2_center_x, p2_center_y)
+                draw_text_shadow(canvas, font_small, "P2", p2_center_x, 90, center=True, col=COL_ACCENT_2)
+                
+                # P2 selections
+                p2_color = CHARACTER_COLORS[p2_color_index]["name"]
+                p2_ability = CHARACTER_ABILITIES[p2_ability_index]["name"]
+                draw_text_shadow(canvas, font_med, f"{p2_color}", p2_center_x, 237, center=True, col=COL_ACCENT_2)
+                draw_text_shadow(canvas, font_med, f"{p2_ability}", p2_center_x, 307, center=True, col=COL_ACCENT_2)
+            
+            # Draw buttons
+            for b in mp_char_buttons: b.draw(canvas, dt)
+        
+        elif game_state == STATE_MP_ROOM_BROWSER:
+            # Server list
+            menu_scroll_x += dt * 60
+            day_bg.draw(canvas, menu_scroll_x)
+            draw_text_shadow(canvas, font_big, "Server List", VIRTUAL_W//2, 30, center=True)
+            
+            # Draw server list panel
+            list_rect = pygame.Rect(50, 70, VIRTUAL_W - 100, 250)
+            draw_panel(canvas, list_rect)
+            
+            if room_list:
+                y_offset = 80
+                for i, (room_ip, room_mode) in enumerate(list(room_list.items())[:6]):  # Show max 6 rooms
+                    room_rect = pygame.Rect(60, y_offset, VIRTUAL_W - 120, 35)
+                    is_selected = (selected_room == room_ip)
+                    
+                    # Highlight selected
+                    if is_selected:
+                        pygame.draw.rect(canvas, (40, 40, 60), room_rect, border_radius=3)
+                    
+                    # Room info
+                    draw_text_shadow(canvas, font_small, f"{room_ip}", 70, y_offset + 8, col=COL_ACCENT_3 if is_selected else COL_TEXT)
+                    mode_text = "Co-op" if room_mode == MODE_COOP else "Versus"
+                    draw_text_shadow(canvas, font_small, f"Mode: {mode_text}", VIRTUAL_W - 180, y_offset + 8, col=COL_ACCENT_1)
+                    
+                    y_offset += 40
+            else:
+                draw_text_shadow(canvas, font_med, "No servers found", VIRTUAL_W//2, 180, center=True, col=(100, 100, 110))
+                draw_text_shadow(canvas, font_small, "Click Refresh to scan", VIRTUAL_W//2, 210, center=True, col=(80, 80, 90))
+            
+            # Draw buttons
+            for b in mp_buttons: b.draw(canvas, dt)
 
         # Scale and Draw to Window
         window.fill((0, 0, 0)) # Letterbox bars
