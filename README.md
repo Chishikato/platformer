@@ -12,7 +12,7 @@ You play as a slime on an adventure (or a fever dream lol)
 - **Move left**: `A` or `←`
 - **Move right**: `D` or `→`
 - **Jump**: `W`, `↑`, or `Space`
-- **Slam downward**: `Left Shift`, `S`, or `↓`
+- **Use skill**: `Left Shift`, `S`, or `↓`
 - **Pause / exit run**: `ESC`
 
 ### Local 2-Player (Play Local mode)
@@ -22,14 +22,14 @@ You play as a slime on an adventure (or a fever dream lol)
 - Left: `A`
 - Right: `D`
 - Jump: `W` or `Space`
-- Slam: `Left Shift` or `S`
+- Skill: `Left Shift` or `S`
 
 **Player 2**
 
 - Left: `J`
 - Right: `L`
 - Jump: `I`
-- Slam: `Right Shift` or `K`
+- Skill: `Right Shift` or `K`
 
 ---
 
