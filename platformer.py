@@ -44,6 +44,11 @@ BASE_SLAM_COOLDOWN = 1.0
 SLAM_BASE_RADIUS = 40.0            
 SLAM_RADIUS_PER_HEIGHT = 0.25      
 
+# Dash Constants (NEW)
+BASE_DASH_SPEED = 800.0
+BASE_DASH_DURATION = 0.20
+BASE_DASH_COOLDOWN = 1.2
+
 TILE_SIZE = 20 
 # Ground level for horizontal play
 GROUND_LEVEL = VIRTUAL_H - 2 * TILE_SIZE
@@ -108,7 +113,8 @@ CHARACTER_COLORS = [
 ]
 
 CHARACTER_ABILITIES = [
-    {"name": "Slam", "description": "Instantly slam down, dealing\nmassive damage to enemies below"}
+    {"name": "Slam", "description": "Instantly slam down, dealing\nmassive damage to enemies below"},
+    {"name": "Dash", "description": "Dash forward at high speed,\nphasing through enemies and spikes"}
 ]
 
 # DEFAULT KEYBINDINGS
@@ -267,7 +273,7 @@ UPGRADE_INFO = {
     "speed": {"name": "Agility", "base_cost": 50, "cost_mult": 1.5, "max": 10, "desc": "+5% Move Speed"},
     "jump":  {"name": "Rocket Boots", "base_cost": 60, "cost_mult": 1.6, "max": 10, "desc": "+3% Jump Height"},
     "hp":    {"name": "Iron Heart", "base_cost": 200, "cost_mult": 2.0, "max": 5,  "desc": "+1 Max HP"},
-    "slam":  {"name": "Graviton", "base_cost": 80, "cost_mult": 1.4, "max": 10, "desc": "-8% Slam Cooldown"}
+    "slam":  {"name": "Graviton", "base_cost": 80, "cost_mult": 1.4, "max": 10, "desc": "-8% Slam/Dash Cooldown"}
 }
 
 def get_upgrade_cost(key, current_level):
@@ -1146,7 +1152,7 @@ class Player:
     JUMP_BUFFER = 0.12
     AIR_CONTROL = 0.9
 
-    def __init__(self, color, x, y, stats=None, sprite_dict=None):
+    def __init__(self, color, x, y, stats=None, sprite_dict=None, ability="Slam"):
         self.color = color
         # Default visual size for rectangle, overridden by sprites if present
         self.w, self.h = TILE_SIZE, TILE_SIZE * 2
@@ -1158,6 +1164,8 @@ class Player:
         self.is_dying = False
         self.death_timer = 0.0
         
+        self.ability_type = ability
+        
         self.stats_speed_lvl = stats.get("speed", 0) if stats else 0
         self.stats_jump_lvl = stats.get("jump", 0) if stats else 0
         self.stats_hp_lvl = stats.get("hp", 0) if stats else 0
@@ -1166,12 +1174,16 @@ class Player:
         self.max_hp = 3 + self.stats_hp_lvl
         self.hp = self.max_hp
         self.invul_timer = 0.0
-        self.flash_on_invul = False # NEW: Controls if we flicker or not
+        self.flash_on_invul = False 
         self.knockback_timer = 0.0
 
         self.speed_val = BASE_PLAYER_SPEED * (1.0 + 0.05 * self.stats_speed_lvl)
         self.jump_val = BASE_JUMP_VEL * (1.0 + 0.03 * self.stats_jump_lvl)
-        self.slam_cd_val = max(0.1, BASE_SLAM_COOLDOWN * (1.0 - 0.08 * self.stats_slam_lvl))
+        
+        # Cooldown reduction applies to both Slam and Dash
+        cd_multiplier = (1.0 - 0.08 * self.stats_slam_lvl)
+        self.slam_cd_val = max(0.1, BASE_SLAM_COOLDOWN * cd_multiplier)
+        self.dash_cd_val = max(0.1, BASE_DASH_COOLDOWN * cd_multiplier)
 
         self.on_wall = False
         self.wall_dir = 0
@@ -1179,11 +1191,21 @@ class Player:
         self.coyote_timer = 0.0
         self.jump_buffer_timer = 0.0
         self.jump_was_pressed = False
+        
+        # Slam specific
         self.slam_active = False
         self.slam_cooldown = 0.0
         self.slam_start_y = 0.0
         self.pending_slam_impact = False
         self.slam_impact_power = 0.0
+        
+        # Dash specific
+        self.dash_active = False
+        self.dash_timer = 0.0
+        self.dash_cooldown = 0.0
+        self.dash_speed = BASE_DASH_SPEED
+        self.dash_duration = BASE_DASH_DURATION
+        
         self.trail = []
         
         # Animation
@@ -1235,7 +1257,6 @@ class Player:
         # Centered collider
         return pygame.Rect(int(self.x), int(self.y), int(self.w), int(self.h))
 
-    # (Keep update method exactly the same as before, no changes needed there)
     def update(self, dt, level, input_left, input_right, input_jump, input_slam):
         if not self.alive: return
 
@@ -1249,7 +1270,7 @@ class Player:
             self.current_action = "die"
             if self.on_ground: self.vx = 0
 
-        # --- KNOCKBACK LOGIC (NEW) ---
+        # --- KNOCKBACK LOGIC ---
         # If being knocked back, disable control inputs and tick down timer
         if self.knockback_timer > 0:
             self.knockback_timer -= dt
@@ -1269,7 +1290,7 @@ class Player:
         self.anim_timer += dt
         if self.squash_timer > 0: self.squash_timer -= dt
         if self.shockwave_timer > 0: self.shockwave_timer -= dt
-        if self.slam_active: self.trail.append([self.x, self.y, 200])
+        if self.slam_active or self.dash_active: self.trail.append([self.x, self.y, 200])
         if self.invul_timer > 0: self.invul_timer -= dt
 
         for t in self.trail:
@@ -1278,8 +1299,12 @@ class Player:
 
         was_on_ground = self.on_ground
         self.pending_slam_impact = False
+        
+        # Update Cooldowns
         if self.slam_cooldown > 0.0:
             self.slam_cooldown = max(0.0, self.slam_cooldown - dt)
+        if self.dash_cooldown > 0.0:
+            self.dash_cooldown = max(0.0, self.dash_cooldown - dt)
         
         # Coyote time & Jump Buffer
         if self.on_ground: self.coyote_timer = self.COYOTE_TIME
@@ -1291,7 +1316,9 @@ class Player:
 
         # MOVEMENT PHYSICS
         desired_vx = 0.0
-        if not self.is_dying and self.knockback_timer <= 0: # Only move if not dying AND not stunned
+        
+        # Only allow movement if not dashing
+        if not self.is_dying and self.knockback_timer <= 0 and not self.dash_active: 
             if input_left: 
                 desired_vx -= self.speed_val
                 self.facing_right = False
@@ -1303,51 +1330,86 @@ class Player:
             if self.knockback_timer > 0:
                 # Friction during knockback on ground
                 self.vx = lerp(self.vx, 0, dt * 5)
-            else:
+            elif not self.dash_active:
                 self.vx = 0 if self.is_dying else desired_vx
         else: 
-            # Air control
+            # Air control (disabled during dash)
             if self.knockback_timer > 0:
-                # Less air control during knockback
                 pass 
-            else:
+            elif not self.dash_active:
                 self.vx += (desired_vx - self.vx) * self.AIR_CONTROL * dt * 10.0
 
-        # Slam Logic
-        can_slam = (not self.on_ground) and (not self.slam_active) and (self.slam_cooldown <= 0.0) and (not self.is_dying)
-        if input_slam and can_slam and self.knockback_timer <= 0:
-            self.slam_active = True
-            self.slam_start_y = self.y
-            self.vy = BASE_SLAM_SPEED
-            spawn_dust(self.x + self.w/2, self.y, count=5, color=COL_ACCENT_1)
+        # Ability Logic: Slam or Dash
+        can_use_ability = (not self.is_dying) and (self.knockback_timer <= 0)
+        
+        # SLAM LOGIC
+        if self.ability_type == "Slam" and can_use_ability:
+            can_slam = (not self.on_ground) and (not self.slam_active) and (self.slam_cooldown <= 0.0)
+            if input_slam and can_slam:
+                self.slam_active = True
+                self.slam_start_y = self.y
+                self.vy = BASE_SLAM_SPEED
+                spawn_dust(self.x + self.w/2, self.y, count=5, color=COL_ACCENT_1)
+        
+        # DASH LOGIC
+        elif self.ability_type == "Dash" and can_use_ability:
+            can_dash = (not self.dash_active) and (self.dash_cooldown <= 0.0)
+            if input_slam and can_dash:
+                self.dash_active = True
+                self.dash_timer = self.dash_duration
+                self.dash_cooldown = self.dash_cd_val
+                
+                # Determine Dash Direction
+                dash_dir = 1 if self.facing_right else -1
+                if input_left: dash_dir = -1
+                if input_right: dash_dir = 1
+                self.facing_right = (dash_dir == 1)
+                
+                self.vx = dash_dir * self.dash_speed
+                self.vy = 0 # Defy gravity initially
+                spawn_dust(self.x + self.w/2, self.y + self.h/2, count=8, color=COL_ACCENT_2)
 
-        # Gravity & Wall Logic
-        self.vy += BASE_GRAVITY * dt
-        if self.on_wall and not self.on_ground and self.vy > 0 and not self.slam_active and not self.is_dying and self.knockback_timer <= 0:
-            if self.vy > WALL_SLIDE_SPEED:
-                self.vy = WALL_SLIDE_SPEED
-                if random.random() < 0.2:
-                    offset_x = 0 if self.wall_dir == 1 else self.w
-                    spawn_dust(self.x + offset_x, self.y + self.h, 1)
+        # Update Dash State
+        if self.dash_active:
+            self.dash_timer -= dt
+            self.vy = 0 # Sustain gravity defiance
+            # Maintain dash speed
+            dash_dir = 1 if self.facing_right else -1
+            self.vx = dash_dir * self.dash_speed
+            
+            if self.dash_timer <= 0:
+                self.dash_active = False
+                self.vx *= 0.5 # Slow down after dash
+                
+        # Gravity & Wall Logic (Only if not dashing)
+        if not self.dash_active:
+            self.vy += BASE_GRAVITY * dt
+            
+            if self.on_wall and not self.on_ground and self.vy > 0 and not self.slam_active and not self.is_dying and self.knockback_timer <= 0:
+                if self.vy > WALL_SLIDE_SPEED:
+                    self.vy = WALL_SLIDE_SPEED
+                    if random.random() < 0.2:
+                        offset_x = 0 if self.wall_dir == 1 else self.w
+                        spawn_dust(self.x + offset_x, self.y + self.h, 1)
 
-        # Variable jump height
-        if (not input_jump) and (self.vy < 0) and (not self.slam_active) and self.knockback_timer <= 0:
-            self.vy += BASE_GRAVITY * dt * 0.6
+            # Variable jump height
+            if (not input_jump) and (self.vy < 0) and (not self.slam_active) and self.knockback_timer <= 0:
+                self.vy += BASE_GRAVITY * dt * 0.6
 
-        # Jumps
-        if (not self.slam_active) and self.jump_buffer_timer > 0.0 and self.coyote_timer > 0.0 and not self.is_dying and self.knockback_timer <= 0:
-            self.vy = self.jump_val
-            self.on_ground = False
-            self.coyote_timer = 0.0
-            self.jump_buffer_timer = 0.0
-            spawn_dust(self.x + self.w/2, self.y + self.h, count=8)
+            # Jumps
+            if (not self.slam_active) and self.jump_buffer_timer > 0.0 and self.coyote_timer > 0.0 and not self.is_dying and self.knockback_timer <= 0:
+                self.vy = self.jump_val
+                self.on_ground = False
+                self.coyote_timer = 0.0
+                self.jump_buffer_timer = 0.0
+                spawn_dust(self.x + self.w/2, self.y + self.h, count=8)
 
-        if (not self.slam_active) and self.jump_buffer_timer > 0.0 and self.on_wall and not self.on_ground and not self.is_dying and self.knockback_timer <= 0:
-            self.vy = WALL_JUMP_Y
-            self.vx = -self.wall_dir * WALL_JUMP_X 
-            self.jump_buffer_timer = 0.0
-            self.on_wall = False
-            spawn_dust(self.x + (0 if self.wall_dir == 1 else self.w), self.y + self.h/2, count=6)
+            if (not self.slam_active) and self.jump_buffer_timer > 0.0 and self.on_wall and not self.on_ground and not self.is_dying and self.knockback_timer <= 0:
+                self.vy = WALL_JUMP_Y
+                self.vx = -self.wall_dir * WALL_JUMP_X 
+                self.jump_buffer_timer = 0.0
+                self.on_wall = False
+                spawn_dust(self.x + (0 if self.wall_dir == 1 else self.w), self.y + self.h/2, count=6)
 
         # --- COLLISION LOGIC ---
         nx = self.x + self.vx * dt
@@ -1423,6 +1485,9 @@ class Player:
             new_action = "die" 
         elif self.slam_active: 
             new_action = "slam"
+        elif self.dash_active:
+             # Reuse move or slam frame for dash, or dedicated if existed
+            new_action = "slam" 
         # Only play hit animation if recently hit (knockback) or periodic invul
         elif self.knockback_timer > 0:
              new_action = "hit"
@@ -1467,7 +1532,7 @@ class Player:
             self.frame_index = 9
             return
 
-        # --- Slam Animation ---
+        # --- Slam/Dash Animation ---
         if self.current_action == "slam":
             frames = self.slam_frames
             if frames:
@@ -1536,7 +1601,7 @@ class Player:
 
     def take_damage(self, amount, source_x=None):
         # Prevent damage if already dead/dying or invincible
-        if self.invul_timer > 0 or self.slam_active or self.is_dying or not self.alive:
+        if self.invul_timer > 0 or self.slam_active or self.is_dying or not self.alive or self.dash_active:
             return
         
         self.hp -= amount
@@ -1573,7 +1638,11 @@ class Player:
         for t in self.trail:
             rect = pygame.Rect(t[0] - cam_x, t[1] - cam_y, self.w, self.h)
             s = pygame.Surface((int(self.w), int(self.h)), pygame.SRCALPHA)
-            s.fill(self.color)
+            # Use Pink color for dash trails to differentiate
+            c = self.color
+            if self.dash_active: c = COL_ACCENT_2 
+            
+            s.fill(c)
             s.set_alpha(int(t[2] * 0.5))
             surf.blit(s, rect)
 
@@ -2269,10 +2338,13 @@ def main():
         def start_with_selection():
             # Create custom sprite dict for selected color
             custom_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[selected_color_index]["row"])
+            ability_name = CHARACTER_ABILITIES[selected_ability_index]["name"]
+            
             start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, 
                              custom_sprites, player2_sprite, enemy_sprite_dict, tile_surf, 
                              wall_surf, lb, network, ROLE_LOCAL_ONLY, MODE_SINGLE, None, 
-                             local_two_players=False, bg_obj=night_bg)
+                             local_two_players=False, bg_obj=night_bg, 
+                             p1_ability=ability_name)
         
         # Color selector arrows (positioned below the preview)
         char_select_buttons.append(Button(pygame.Rect(180, 220, 40, 35), "<", font_med, prev_color))
@@ -2542,12 +2614,16 @@ def main():
             p1_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[p1_color_index]["row"])
             p2_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[p2_color_index]["row"])
             
+            p1_ab = CHARACTER_ABILITIES[p1_ability_index]["name"]
+            p2_ab = CHARACTER_ABILITIES[p2_ability_index]["name"]
+            
             if mp_connection_type == "local":
                 # Local multiplayer
                 start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, 
                                  p1_sprites, p2_sprites, enemy_sprite_dict, tile_surf, 
                                  wall_surf, lb, network, ROLE_LOCAL_ONLY, mp_mode, None, 
-                                 local_two_players=True, bg_obj=night_bg)
+                                 local_two_players=True, bg_obj=night_bg,
+                                 p1_ability=p1_ab, p2_ability=p2_ab)
             else:
                 # LAN multiplayer - wait for other player or start if connected
                 if network.connected:
@@ -2556,7 +2632,8 @@ def main():
                 start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, 
                                  p1_sprites, p2_sprites, enemy_sprite_dict, tile_surf, 
                                  wall_surf, lb, network, network.role, mp_mode, None, 
-                                 local_two_players=False, bg_obj=night_bg)
+                                 local_two_players=False, bg_obj=night_bg,
+                                 p1_ability=p1_ab, p2_ability=p2_ab)
         
         # Bottom buttons
         # Return button (left)
@@ -3180,7 +3257,7 @@ def apply_screen_mode(window, mode_index):
 # =========================
 # GAME SESSION
 # =========================
-def start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprites, player2_sprites, enemy_sprite_dict, tile_surf, wall_surf, lb, network, net_role, mode, mp_name_hint=None, local_two_players=False, bg_obj=None):
+def start_game(settings, window, canvas, font_small, font_med, font_big, player1_sprites, player2_sprites, enemy_sprite_dict, tile_surf, wall_surf, lb, network, net_role, mode, mp_name_hint=None, local_two_players=False, bg_obj=None, p1_ability="Slam", p2_ability="Slam"):
     clock = pygame.time.Clock()
     
     # --- NEW MUSIC LOGIC START ---
@@ -3228,8 +3305,8 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
         stats_p2 = local_stats
 
     # Pass sprites to Player Constructor
-    p1 = Player(COL_ACCENT_1, spawn_x, spawn_y, stats_p1, sprite_dict=player1_sprites)
-    p2 = Player(COL_ACCENT_2, spawn_x - 30, spawn_y, stats_p2, sprite_dict=player2_sprites)
+    p1 = Player(COL_ACCENT_1, spawn_x, spawn_y, stats_p1, sprite_dict=player1_sprites, ability=p1_ability)
+    p2 = Player(COL_ACCENT_2, spawn_x - 30, spawn_y, stats_p2, sprite_dict=player2_sprites, ability=p2_ability)
     base_x = spawn_x
 
     if net_role == ROLE_CLIENT: local_player, remote_player = p2, p1
@@ -3299,8 +3376,19 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
         for p in particles: p.draw(target_surf, cam_x_now, cam_y_now)
 
         def draw_floating_cd(pl):
+            # Determine which cooldown to check
+            cd_val = 0.0
+            max_cd = 1.0
+            
+            if pl.ability_type == "Slam":
+                cd_val = pl.slam_cooldown
+                max_cd = pl.slam_cd_val
+            elif pl.ability_type == "Dash":
+                cd_val = pl.dash_cooldown
+                max_cd = pl.dash_cd_val
+
             # Only draw if cooldown is active
-            if pl.slam_cooldown > 0:
+            if cd_val > 0:
                 # Position relative to camera
                 sx = pl.x - cam_x_now
                 sy = pl.y - cam_y_now
@@ -3314,7 +3402,7 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 pygame.draw.rect(target_surf, (0,0,0), (sx, bar_y, bar_w, bar_h))
                 
                 # Foreground (White/Silver shrinking bar)
-                ratio = pl.slam_cooldown / pl.slam_cd_val
+                ratio = cd_val / max_cd
                 fill_w = int(bar_w * ratio)
                 pygame.draw.rect(target_surf, (200, 200, 200), (sx, bar_y, fill_w, bar_h))
 
@@ -3596,18 +3684,22 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                             player.vx = 0
                             player.vy = 0
                             player.slam_active = False
+                            player.dash_active = False
                         return
                     
                     r = player.rect()
                     # Obstacle Collisions
                     for obs in level.obstacles: 
                         if r.colliderect(obs): 
+                            if player.dash_active: continue # Phase through spikes
                             player.take_damage(1, source_x=obs.centerx) 
                             return
                     
                     # Enemy Collisions
                     for e in level.enemies: 
                         if r.colliderect(e.rect()): 
+                            if player.dash_active: continue # Phase through enemies
+                            
                             player_bottom = player.y + player.h
                             enemy_center = e.y + e.h * 0.5
                             is_above = player_bottom < enemy_center + 5
