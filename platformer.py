@@ -161,29 +161,24 @@ class BossRoom:
         
     def _create_platforms(self):
         """Create static platform layout"""
-        # Floor platform
+        # 0: Floor
         self.platforms.append(pygame.Rect(0, self.height - TILE_SIZE * 2, 
-                                         self.width, TILE_SIZE))
-        
-        # Mid-level platforms (3 platforms at different heights)
-        # Left platform
+                                          self.width, TILE_SIZE))
+        # 1: Left
         self.platforms.append(pygame.Rect(50, self.height - TILE_SIZE * 8,
-                                         TILE_SIZE * 6, TILE_SIZE))
-        
-        # Center platform (higher)
+                                          TILE_SIZE * 6, TILE_SIZE))
+        # 2: Center (High)
         self.platforms.append(pygame.Rect(self.width // 2 - TILE_SIZE * 3,
-                                         self.height - TILE_SIZE * 12,
-                                         TILE_SIZE * 6, TILE_SIZE))
-        
-        # Right platform
+                                          self.height - TILE_SIZE * 12,
+                                          TILE_SIZE * 6, TILE_SIZE))
+        # 3: Right (This is actually the Right platform in previous code, let's locate the highest one)
         self.platforms.append(pygame.Rect(self.width - TILE_SIZE * 7 - 50,
-                                         self.height - TILE_SIZE * 9,
-                                         TILE_SIZE * 6, TILE_SIZE))
-        
-        # Top platform (small, for jumping)
+                                          self.height - TILE_SIZE * 9,
+                                          TILE_SIZE * 6, TILE_SIZE))
+        # 4: Top Small Platform (The actual highest point)
         self.platforms.append(pygame.Rect(self.width // 2 - TILE_SIZE * 2,
-                                         self.height - TILE_SIZE * 16,
-                                         TILE_SIZE * 4, TILE_SIZE))
+                                          self.height - TILE_SIZE * 16,
+                                          TILE_SIZE * 4, TILE_SIZE))
         
     def get_collision_tiles(self, rect):
         """Return platforms that collide with rect"""
@@ -202,24 +197,20 @@ class BossRoom:
         
         # Spawn credit orbs scattered around the room
         for i in range(VICTORY_CREDITS):
-            # Random position in upper half of room
             x = random.randint(100, self.width - 100)
             y = random.randint(100, self.height // 2)
-            
             orb = {
-                "x": x,
-                "y": y,
-                "vx": random.uniform(-100, 100),
-                "vy": random.uniform(-300, -100),
-                "size": 12,
-                "lifetime": 30.0  # Credits persist for 30 seconds
+                "x": x, "y": y,
+                "vx": random.uniform(-100, 100), "vy": random.uniform(-300, -100),
+                "size": 12, "lifetime": 30.0
             }
             self.credit_orbs.append(orb)
             
-        # Spawn return portal at center-bottom
+        # --- CHANGED: Spawn portal at the Top Platform (Index 4) ---
+        top_platform = self.platforms[4]
         self.return_portal = pygame.Rect(
-            self.width // 2 - 30,
-            self.height - TILE_SIZE * 4,
+            top_platform.centerx - 30,
+            top_platform.top - 80, # Sit on top of the platform
             60, 80
         )
         
@@ -297,22 +288,15 @@ class BossRoom:
                 
         # Draw credit orbs
         for orb in self.credit_orbs:
-            # Gold coin visual
             glow_size = int(orb["size"] + 2)
-            # Pulsing glow
             pulse = (math.sin(self.portal_anim_timer * 8) + 1) * 0.2 + 0.8
-            
-            # --- FIX: Clamp color values to max 255 ---
             r = min(255, int(255 * pulse))
             g = min(255, int(215 * pulse))
             glow_color = (r, g, 0)
             
-            pygame.draw.circle(surf, glow_color,
-                             (int(orb["x"]), int(orb["y"])), glow_size)
-            pygame.draw.circle(surf, (255, 215, 0),
-                             (int(orb["x"]), int(orb["y"])), int(orb["size"]))
-            pygame.draw.circle(surf, (255, 255, 220),
-                             (int(orb["x"]), int(orb["y"])), max(1, int(orb["size"]) - 2))
+            pygame.draw.circle(surf, glow_color, (int(orb["x"]), int(orb["y"])), glow_size)
+            pygame.draw.circle(surf, (255, 215, 0), (int(orb["x"]), int(orb["y"])), int(orb["size"]))
+            pygame.draw.circle(surf, (255, 255, 220), (int(orb["x"]), int(orb["y"])), max(1, int(orb["size"]) - 2))
             
         # Draw return portal
         if self.return_portal:
@@ -353,85 +337,96 @@ class NecromancerBoss:
     """Boss enemy with flying movement, attack patterns, and vulnerability cycles"""
     
     def __init__(self, sprites, room_width, room_height, platforms):
-        self.sprites = sprites  # Dictionary of animation frames
+        self.sprites = sprites
         self.room_width = room_width
         self.room_height = room_height
         self.platforms = platforms
         
-        # Calculate dynamic hitbox based on the actual loaded sprite
-        # The scale in load_boss_sprites is 1.5x, resulting in approx 240x192 frames.
-        # Sprite sheets usually have transparency padding, so we trim the hitbox.
         if sprites and "idle" in sprites and sprites["idle"]:
             ref = sprites["idle"][0]
-            # Use ~40% of the width (centers the body)
             self.w = int(ref.get_width() * 0.4)  
-            # Use ~75% of the height (excludes empty space above head)
             self.h = int(ref.get_height() * 0.75)
         else:
-            # Fallback dimensions if sprites fail
             self.w, self.h = 100, 150
             
-        # Position boss at center-top of room initially
         self.x = room_width // 2 - self.w // 2
         self.y = BOSS_FLIGHT_HEIGHT
         
-        # Stats
         self.max_hp = BOSS_HP
         self.hp = self.max_hp
         self.alive = True
         
-        # State machine
-        self.state = "ATTACKING"  # ATTACKING or TIRED
+        # Visibility Flag for after death
+        self.visible = True
+        
+        self.state = "ATTACKING"
         self.state_timer = random.uniform(ATTACK_DURATION_MIN, ATTACK_DURATION_MAX)
         
-        # Animation
+        # Damage Cap Counter
+        self.damage_taken_this_phase = 0
+        
         self.current_action = "idle"
         self.anim_timer = 0.0
         self.frame_index = 0
         self.facing_right = True
         
-        # Attack system
         self.attack_timer = 0.0
-        self.attack_cooldown = 3.0  # Time between attacks
-        self.projectiles = []  # Magic arrows
-        self.platform_fires = []  # Fire hazards
+        self.attack_cooldown = 3.0
+        self.projectiles = []
+        self.platform_fires = []
         
-        # Movement
-        self.vx = 100.0  # Horizontal flying speed
-        self.target_y = BOSS_FLIGHT_HEIGHT  # Target height for smooth movement
+        self.vx = 100.0
+        self.target_y = BOSS_FLIGHT_HEIGHT
         
-        # Invulnerability
         self.invul_timer = 0.0
         
     def take_damage(self, amount):
         """Deal damage to boss, returns True if boss died"""
-        if self.invul_timer > 0 or self.state != "TIRED":
-            return False  # Invulnerable during attack phase
+        # Can only take damage if TIRED, not invulnerable, and visible
+        if self.invul_timer > 0 or self.state != "TIRED" or not self.visible:
+            return False 
             
+        # Check Damage Cap
+        if self.damage_taken_this_phase >= 2:
+            return False
+
         self.hp -= amount
         self.hp = max(0, self.hp)
-        self.invul_timer = 0.5  # Brief invulnerability after hit
+        self.damage_taken_this_phase += 1
+        
+        self.invul_timer = 0.5
         self.current_action = "hit"
         self.frame_index = 0
+        self.anim_timer = 0 # Reset anim timer so hit plays from start
         
         if self.hp <= 0:
             self.alive = False
             self.current_action = "death"
             self.frame_index = 0
+            self.anim_timer = 0
             return True
             
         return False
         
     def update(self, dt, player_x, player_y, player_rect):
         """Update boss AI, movement, and attacks"""
+        
+        # Handle Death Animation Correctly
         if not self.alive:
-            # Death animation
-            self.anim_timer += dt
-            if self.anim_timer > 0.1:
-                self.frame_index += 1
-                self.anim_timer = 0
-            return
+            if self.visible:
+                self.anim_timer += dt
+                if self.anim_timer > 0.15: # Slightly slower death anim
+                    self.frame_index += 1
+                    self.anim_timer = 0
+                    
+                    # Check if death animation finished
+                    frames = self.sprites.get("death", [])
+                    if frames and self.frame_index >= len(frames):
+                        self.visible = False # Sprite disappears
+                        
+            return False # Dead boss doesn't deal damage
             
+        # Normal Alive Logic
         self.invul_timer -= dt
         if self.invul_timer < 0:
             self.invul_timer = 0
@@ -443,12 +438,12 @@ class NecromancerBoss:
             if self.state_timer <= 0:
                 # Transition to TIRED
                 self.state = "TIRED"
+                self.damage_taken_this_phase = 0 # Reset damage counter
                 self.state_timer = TIRED_DURATION
                 self.target_y = BOSS_TIRED_HEIGHT
                 self.current_action = "idle"
                 self.frame_index = 0
             else:
-                # Execute attacks
                 self._update_attacking(dt, player_x, player_y, player_rect)
                 
         elif self.state == "TIRED":
@@ -456,90 +451,64 @@ class NecromancerBoss:
                 # Transition back to ATTACKING
                 self.state = "ATTACKING"
                 duration = random.uniform(ATTACK_DURATION_MIN, ATTACK_DURATION_MAX)
-                
-                # Enrage: 25% faster attacks at 1 HP
                 if self.hp == 1:
                     duration /= ENRAGE_ATTACK_SPEED_MULTIPLIER
-                    
                 self.state_timer = duration
                 self.target_y = BOSS_FLIGHT_HEIGHT
-                self.attack_timer = 0.5  # Brief delay before first attack
+                self.attack_timer = 0.5
                 
-        # Movement
         self._update_movement(dt, player_x)
-        
-        # Update projectiles
         hit = self._update_projectiles(dt, player_rect)
-        
-        # Animation
         self._update_animation(dt)
         
         return hit
         
     def _update_attacking(self, dt, player_x, player_y, player_rect):
-        """Handle attack patterns during ATTACKING state"""
         self.attack_timer -= dt
-        
         if self.attack_timer <= 0:
-            # Choose attack pattern
             attack_type = random.choice(["arrows", "fire"])
-            
             if attack_type == "arrows":
                 self._attack_magic_arrows(player_x, player_y)
                 cooldown = 3.0
             else:
                 self._attack_platform_fire()
                 cooldown = 4.0
-                
-            # Enrage: faster cooldowns at 1 HP
+            
             if self.hp == 1:
                 cooldown /= ENRAGE_ATTACK_SPEED_MULTIPLIER
-                
             self.attack_timer = cooldown
             
     def _attack_magic_arrows(self, player_x, player_y):
-        """Spawn magic arrow projectiles targeting player"""
         self.current_action = "cast"
         self.frame_index = 0
-        
+        self.anim_timer = 0
         num_arrows = random.randint(3, 5)
         boss_center_x = self.x + self.w // 2
         boss_center_y = self.y + self.h // 2
-        
         for i in range(num_arrows):
             angle = math.atan2(player_y - boss_center_y, player_x - boss_center_x)
-            # Add some spread
             angle += random.uniform(-0.3, 0.3)
-            
             speed = 200.0
             vx = math.cos(angle) * speed
             vy = math.sin(angle) * speed
-            
             projectile = {
-                "x": boss_center_x,
-                "y": boss_center_y,
-                "vx": vx,
-                "vy": vy,
-                "size": 8,
-                "lifetime": 5.0
+                "x": boss_center_x, "y": boss_center_y,
+                "vx": vx, "vy": vy,
+                "size": 8, "lifetime": 5.0
             }
             self.projectiles.append(projectile)
             
     def _attack_platform_fire(self):
-        """Set random platforms on fire"""
         self.current_action = "attack1"
         self.frame_index = 0
-        
-        if not self.platforms:
-            return
-            
+        self.anim_timer = 0
+        if not self.platforms: return
         num_fires = random.randint(1, 2)
         targets = random.sample(self.platforms, min(num_fires, len(self.platforms)))
-        
         for platform in targets:
             fire = {
                 "platform": platform,
-                "warning_timer": 1.0,  # 1 second warning
+                "warning_timer": 1.0,
                 "fire_timer": 0.0,
                 "fire_duration": 2.0,
                 "active": False
@@ -547,11 +516,7 @@ class NecromancerBoss:
             self.platform_fires.append(fire)
             
     def _update_movement(self, dt, player_x):
-        """Update boss flying movement"""
-        # Horizontal patrol
         self.x += self.vx * dt
-        
-        # Bounce off walls
         if self.x <= 0:
             self.x = 0
             self.vx = abs(self.vx)
@@ -561,22 +526,18 @@ class NecromancerBoss:
             self.vx = -abs(self.vx)
             self.facing_right = False
             
-        # Smooth vertical movement to target height
         y_diff = self.target_y - self.y
         if abs(y_diff) > 2:
-            self.y += y_diff * 2.0 * dt  # Smooth interpolation
+            self.y += y_diff * 2.0 * dt
         else:
             self.y = self.target_y
             
     def _update_projectiles(self, dt, player_rect):
-        """Update magic arrow projectiles"""
         hit = False
         for proj in self.projectiles[:]:
             proj["x"] += proj["vx"] * dt
             proj["y"] += proj["vy"] * dt
             proj["lifetime"] -= dt
-            
-            # Check collision with player
             proj_rect = pygame.Rect(proj["x"] - proj["size"]//2, 
                                     proj["y"] - proj["size"]//2,
                                     proj["size"], proj["size"])
@@ -584,14 +545,11 @@ class NecromancerBoss:
                 self.projectiles.remove(proj)
                 hit = True
                 continue
-                
-            # Remove if out of bounds or expired
             if (proj["lifetime"] <= 0 or 
                 proj["x"] < -50 or proj["x"] > self.room_width + 50 or
                 proj["y"] < -50 or proj["y"] > self.room_height + 50):
                 self.projectiles.remove(proj)
                 
-        # Update platform fires
         for fire in self.platform_fires[:]:
             if not fire["active"]:
                 fire["warning_timer"] -= dt
@@ -602,11 +560,18 @@ class NecromancerBoss:
                 fire["fire_timer"] -= dt
                 if fire["fire_timer"] <= 0:
                     self.platform_fires.remove(fire)
-                    
         return hit
         
     def _update_animation(self, dt):
-        """Update sprite animation"""
+        if self.current_action == "hit" and self.invul_timer > 0.1:
+             pass # Let it play
+        elif self.current_action in ["cast", "attack1"] and self.frame_index < 5:
+             pass # Let start of attack play
+        elif self.invul_timer <= 0:
+             # Default state handling
+             if self.current_action == "hit": 
+                 self.current_action = "idle" # Recover
+                 
         if self.current_action not in self.sprites or not self.sprites[self.current_action]:
             return
             
@@ -617,100 +582,85 @@ class NecromancerBoss:
             self.frame_index += 1
             frames = self.sprites[self.current_action]
             
-            # Loop or switch back to idle
+            # Loop logic
             if self.frame_index >= len(frames):
                 if self.current_action in ["hit", "cast", "attack1", "attack2"]:
                     self.current_action = "idle"
                     self.frame_index = 0
                 else:
                     self.frame_index = 0
-                    
             self.anim_timer = 0.0
             
     def check_platform_fire_damage(self, player_rect):
-        """Check if player is standing on a burning platform"""
         check_rect = player_rect.inflate(0, 4)
-        
         for fire in self.platform_fires:
             if fire["active"] and check_rect.colliderect(fire["platform"]):
                 return True
         return False
         
     def rect(self):
-        """Return boss collision rectangle"""
         return pygame.Rect(int(self.x), int(self.y), self.w, self.h)
         
     def draw(self, surf):
-        """Draw boss and all attacks"""
-        # Draw projectiles
+        # Draw projectiles and fire regardless of boss visibility (they persist)
         for proj in self.projectiles:
-            # Purple/pink magical arrow
             color = (200, 100, 255)
-            pygame.draw.circle(surf, color, 
-                             (int(proj["x"]), int(proj["y"])), proj["size"])
-            # Glow effect
-            pygame.draw.circle(surf, (255, 200, 255), 
-                             (int(proj["x"]), int(proj["y"])), proj["size"]//2)
-                             
-        # Draw platform fires
+            pygame.draw.circle(surf, color, (int(proj["x"]), int(proj["y"])), proj["size"])
+            pygame.draw.circle(surf, (255, 200, 255), (int(proj["x"]), int(proj["y"])), proj["size"]//2)
+            
         for fire in self.platform_fires:
             plat = fire["platform"]
             if not fire["active"]:
-                # Warning indicator (red rectangle)
                 alpha = int((math.sin(fire["warning_timer"] * 10) + 1) * 127)
                 warning_surf = pygame.Surface((plat.width, 4), pygame.SRCALPHA)
                 warning_surf.fill((255, 0, 0, alpha))
                 surf.blit(warning_surf, (plat.x, plat.y - 6))
             else:
-                # Fire effect (animated flames)
                 for i in range(0, plat.width, 20):
                     flame_height = 15 + math.sin(fire["fire_timer"] * 5 + i) * 5
                     flame_x = plat.x + i
                     flame_y = plat.y - flame_height
-                    # Orange/red gradient
                     colors = [(255, 100, 0), (255, 200, 0), (255, 50, 0)]
                     color = random.choice(colors)
                     pygame.draw.polygon(surf, color, [
-                        (flame_x, plat.y),
-                        (flame_x + 10, plat.y),
-                        (flame_x + 5, flame_y)
+                        (flame_x, plat.y), (flame_x + 10, plat.y), (flame_x + 5, flame_y)
                     ])
-                    
-        # Draw boss sprite
-        if self.current_action in self.sprites and self.sprites[self.current_action]:
-            frames = self.sprites[self.current_action]
-            if frames and self.frame_index < len(frames):
-                img = frames[self.frame_index]
-                
-                # Flip if facing left
-                if not self.facing_right:
-                    img = pygame.transform.flip(img, True, False)
-                    
-                # Center sprite horizontally on the hitbox
-                draw_x = self.x + (self.w // 2) - (img.get_width() // 2)
-                # Align sprite bottom with hitbox bottom
-                draw_y = self.y + self.h - img.get_height()
-                
-                surf.blit(img, (int(draw_x), int(draw_y)))
-                
-        # Draw HP bar (Aligned to new width)
-        bar_width = self.w
-        bar_height = 8
-        bar_x = self.x
-        bar_y = self.y - 15
         
-        # Background
-        pygame.draw.rect(surf, (60, 60, 60), 
-                        (bar_x, bar_y, bar_width, bar_height))
-        # Health
-        hp_ratio = self.hp / self.max_hp
-        health_color = (255, 50, 50) if self.hp == 1 else (50, 255, 50)
-        pygame.draw.rect(surf, health_color,
-                        (bar_x, bar_y, bar_width * hp_ratio, bar_height))
-        # Border
-        pygame.draw.rect(surf, (200, 200, 200),
-                        (bar_x, bar_y, bar_width, bar_height), 2)
-
+        # Only draw boss sprite if visible
+        if self.visible:
+            if self.current_action in self.sprites and self.sprites[self.current_action]:
+                frames = self.sprites[self.current_action]
+                if frames:
+                    # Clamp frame index just in case
+                    idx = min(self.frame_index, len(frames)-1)
+                    img = frames[idx]
+                    
+                    if not self.facing_right:
+                        img = pygame.transform.flip(img, True, False)
+                        
+                    draw_x = self.x + (self.w // 2) - (img.get_width() // 2)
+                    draw_y = self.y + self.h - img.get_height()
+                    surf.blit(img, (int(draw_x), int(draw_y)))
+            
+            # --- Sweat Effect when TIRED ---
+            if self.state == "TIRED":
+                # Create droplets relative to boss head
+                time_val = pygame.time.get_ticks() / 200.0
+                center_head_x = self.x + self.w // 2
+                head_top_y = self.y + 10
+                
+                # Draw 3 drops
+                for i in range(3):
+                    # Drops fall down (modulo) and wiggle x (sin)
+                    drop_y_offset = (time_val * 20 + i * 15) % 30
+                    drop_x_offset = math.sin(time_val + i) * 20
+                    
+                    # Blue/Cyan sweat color
+                    sweat_color = (0, 200, 255)
+                    
+                    # Draw small vertical ellipse
+                    drop_rect = pygame.Rect(center_head_x + drop_x_offset - 3, head_top_y + drop_y_offset, 6, 9)
+                    pygame.draw.ellipse(surf, sweat_color, drop_rect)
 
 # Internal resolution increased to 640x480 to fit menu items + blank space
 VIRTUAL_W, VIRTUAL_H = 640, 480 
@@ -4182,10 +4132,42 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
             if boss:
                 boss.draw(target_surf)
                 
-                # Draw boss HP bar at top
                 if boss.alive:
-                    hp_text = font_med.render(f"NECROMANCER: {boss.hp}/{boss.max_hp} HP", False, (255, 50, 50))
-                    target_surf.blit(hp_text, (target_surf.get_width() // 2 - hp_text.get_width() // 2, 20))
+                    # Dimensions
+                    bar_total_width = 300
+                    bar_height = 20
+                    screen_center_x = target_surf.get_width() // 2
+                    
+                    # Positions
+                    start_x = screen_center_x - bar_total_width // 2
+                    start_y = 25
+                    
+                    # 1. Draw Name Label
+                    label_surf = font_med.render("NECROMANCER", False, (255, 50, 50)) # Red text
+                    target_surf.blit(label_surf, (screen_center_x - label_surf.get_width()//2, start_y - 22))
+                    
+                    # 2. Draw Background Box (Dark Red)
+                    pygame.draw.rect(target_surf, (40, 0, 0), (start_x, start_y, bar_total_width, bar_height))
+                    # Border
+                    pygame.draw.rect(target_surf, (150, 0, 0), (start_x, start_y, bar_total_width, bar_height), 2)
+                    
+                    # 3. Draw Segments (Player HP Logic)
+                    if boss.max_hp > 0:
+                        # Calculate width of one HP chunk
+                        segment_width = bar_total_width / boss.max_hp
+                        
+                        for i in range(boss.hp):
+                            # X position for this specific block
+                            seg_x = start_x + (i * segment_width)
+                            
+                            # Width of block (subtract 2 for gap effect)
+                            draw_w = segment_width - 2
+                            if draw_w < 1: draw_w = 1 # Safety for high HP counts
+                            
+                            # Draw Red Block
+                            # Add slight padding inside (y+2, h-4)
+                            pygame.draw.rect(target_surf, (255, 0, 0), (seg_x + 1, start_y + 2, draw_w, bar_height - 4))
+
         else:
             # Normal Level Draw
             if bg_obj:
@@ -4367,45 +4349,49 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 if in_boss_room and boss_room:
                     boss_room.update(dt)
                     
-                    # Update boss
-                    if boss and boss.alive:
+                    # Update boss - CHANGED: Run update as long as boss object exists
+                    # to allow death animation to play out
+                    if boss:
                         target_x = local_player.x + local_player.w // 2
                         target_y = local_player.y + local_player.h // 2
+                        
+                        # boss.update returns True if it hit the player
                         projectile_hit = boss.update(dt, target_x, target_y, local_player.rect())
                         
-                        # Projectile damage
-                        if projectile_hit and local_player.invul_timer <= 0:
-                            local_player.take_damage(1)
-                        
-                        # Check platform fire damage
-                        # Check platform fire damage
-                        if boss.check_platform_fire_damage(local_player.rect()):
-                            if not hasattr(local_player, 'fire_damage_timer'):
-                                local_player.fire_damage_timer = 0
-                            local_player.fire_damage_timer -= dt
-                            if local_player.fire_damage_timer <= 0:
+                        # Only handle interactions if boss is actually alive
+                        if boss.alive:
+                            # Projectile damage
+                            if projectile_hit and local_player.invul_timer <= 0:
                                 local_player.take_damage(1)
-                                local_player.fire_damage_timer = 0.5
-                        else:
-                            if hasattr(local_player, 'fire_damage_timer'):
-                                local_player.fire_damage_timer = 0
-                                
-                        # --- BOSS COLLISION LOGIC ---
-                        if local_player.rect().colliderect(boss.rect()):
-                            # CASE A: Player hits Boss (Only when boss is tired)
-                            if boss.state == "TIRED" and (local_player.slam_active or local_player.vy > 100):
-                                died = boss.take_damage(1)
-                                local_player.vy = -350  # Bounce player
-                                
-                                if died:
-                                    boss_defeated = True
-                                    p1_orbs += 5  # Reward
-                                    boss_room.activate_victory()
                             
-                            # CASE B: Boss hits Player (Contact Damage)
-                            elif boss.state == "ATTACKING":
-                                # Push player away and deal damage
-                                local_player.take_damage(1, source_x=boss.x + boss.w//2)
+                            # Check platform fire damage
+                            if boss.check_platform_fire_damage(local_player.rect()):
+                                if not hasattr(local_player, 'fire_damage_timer'):
+                                    local_player.fire_damage_timer = 0
+                                local_player.fire_damage_timer -= dt
+                                if local_player.fire_damage_timer <= 0:
+                                    local_player.take_damage(1)
+                                    local_player.fire_damage_timer = 0.5
+                            else:
+                                if hasattr(local_player, 'fire_damage_timer'):
+                                    local_player.fire_damage_timer = 0
+                                    
+                            # --- BOSS COLLISION LOGIC ---
+                            if local_player.rect().colliderect(boss.rect()):
+                                # CASE A: Player hits Boss (Only when boss is tired)
+                                if boss.state == "TIRED" and (local_player.slam_active or local_player.vy > 100):
+                                    died = boss.take_damage(1)
+                                    local_player.vy = -350  # Bounce player
+                                    
+                                    if died:
+                                        boss_defeated = True
+                                        p1_orbs += 5  # Reward
+                                        boss_room.activate_victory()
+                                
+                                # CASE B: Boss hits Player (Contact Damage)
+                                elif boss.state == "ATTACKING":
+                                    # Push player away and deal damage
+                                    local_player.take_damage(1, source_x=boss.x + boss.w//2)
                     
                     # Collect credits in boss room
                     credits_collected = boss_room.collect_credit(local_player.rect())
