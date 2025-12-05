@@ -3439,6 +3439,10 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
         p1_total = int(p1_distance / 10 + p1_orbs * 100)
         p2_total = int(p2_distance / 10 + p2_orbs * 100)
         
+        # In coop mode, combine scores
+        if mode == MODE_COOP:
+            combined_score = p1_total + p2_total
+        
         # HUD Panel (Top Left Stats)
         draw_panel(target_surf, pygame.Rect(5, 5, 120, 50), color=(0, 0, 0, 100))
         target_surf.blit(font_small.render(f"DIST: {int(distance/10)}m", False, COL_TEXT), (10, 10))
@@ -3446,7 +3450,7 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
         
         hud_y = 65
         
-        def draw_player_hud(pl, name, y_pos, is_highlighted):
+        def draw_player_hud(pl, name, y_pos, is_highlighted, show_score=True):
             panel_col = (30, 30, 50) if is_highlighted else (10, 10, 20)
             draw_panel(target_surf, pygame.Rect(5, y_pos, 150, 24), color=panel_col)
             target_surf.blit(font_small.render(name, False, COL_TEXT), (10, y_pos+4))
@@ -3467,20 +3471,26 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 if rect_w > 0:
                     pygame.draw.rect(target_surf, hp_col, (rect_x, bar_y, rect_w, bar_h))
 
-            # PTS (Top Right)
-            score_val = p1_total if pl == p1 else p2_total
-            score_str = f"PTS {score_val}"
-            score_surf = font_small.render(score_str, False, COL_ACCENT_3)
-            score_x = target_surf.get_width() - score_surf.get_width() - 15
-            score_bg_rect = pygame.Rect(score_x - 5, y_pos, score_surf.get_width() + 10, 24)
-            draw_panel(target_surf, score_bg_rect, color=(0, 0, 0, 150))
-            target_surf.blit(score_surf, (score_x, y_pos + 4))
+            # PTS (Top Right) - Only show if requested
+            if show_score:
+                if mode == MODE_COOP:
+                    score_val = combined_score
+                else:
+                    score_val = p1_total if pl == p1 else p2_total
+                score_str = f"PTS {score_val}"
+                score_surf = font_small.render(score_str, False, COL_ACCENT_3)
+                score_x = target_surf.get_width() - score_surf.get_width() - 15
+                score_bg_rect = pygame.Rect(score_x - 5, y_pos, score_surf.get_width() + 10, 24)
+                draw_panel(target_surf, score_bg_rect, color=(0, 0, 0, 150))
+                target_surf.blit(score_surf, (score_x, y_pos + 4))
 
         if use_p1:
-            draw_player_hud(p1, "P1", hud_y, highlight_player == 1)
+            # In coop mode, show score only on P1's HUD
+            draw_player_hud(p1, "P1", hud_y, highlight_player == 1, show_score=True)
             hud_y += 30 
         if use_p2:
-            draw_player_hud(p2, "P2", hud_y, highlight_player == 2)
+            # In coop mode, don't show score on P2's HUD (already shown on P1)
+            draw_player_hud(p2, "P2", hud_y, highlight_player == 2, show_score=(mode != MODE_COOP))
 
     while running:
         # CLAMP DT to prevent physics explosions on first frame or lag spikes
@@ -3776,6 +3786,9 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 p1_total = int(p1_distance/10 + p1_orbs * 100)
                 p2_total = int(p2_distance/10 + p2_orbs * 100)
                 
+                # Combined score for coop mode
+                combined_score = p1_total + p2_total if mode == MODE_COOP else 0
+                
                 def finish(name, score, txt):
                     nonlocal game_over, winner_text
                     game_over = True
@@ -3789,7 +3802,7 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 if mode == MODE_SINGLE and not local_player.alive:
                         finish("Player", p1_total if local_player is p1 else p2_total, "GAME OVER")
                 elif mode == MODE_COOP and not p1.alive and not p2.alive:
-                        finish("Team", min(p1_total, p2_total), "MISSION FAILED")
+                        finish("Team", combined_score, "MISSION FAILED")
                 elif mode == MODE_VERSUS and not p1.alive and not p2.alive:
                         winner = "DRAW" if p1_total == p2_total else ("P1 WINS" if p1_total > p2_total else "P2 WINS")
                         finish(winner, max(p1_total, p2_total), winner)
@@ -3809,33 +3822,84 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
             render_scene(canvas, final_cam_x, final_cam_y, highlight_player=None)
         
         # Draw tutorial overlay
-        if tutorial_active and not waiting_for_seed:
+        if tutorial_active and not waiting_for_seed and net_role == ROLE_LOCAL_ONLY:
             # Semi-transparent overlay
             overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 120))
             canvas.blit(overlay, (0, 0))
             
-            # Get key names
-            left_key = pygame.key.name(kb["p1_left"]).upper()
-            right_key = pygame.key.name(kb["p1_right"]).upper()
-            jump_key = pygame.key.name(kb["p1_jump"]).upper()
-            ability_key = pygame.key.name(kb["p1_slam"]).upper()
+            # Get P1 key names
+            p1_left_key = pygame.key.name(kb["p1_left"]).upper()
+            p1_right_key = pygame.key.name(kb["p1_right"]).upper()
+            p1_jump_key = pygame.key.name(kb["p1_jump"]).upper()
+            p1_ability_key = pygame.key.name(kb["p1_slam"]).upper()
             
-            # Tutorial text lines
-            y_center = VIRTUAL_H // 2
-            line_spacing = 45
+            # Get P2 key names
+            p2_left_key = pygame.key.name(kb["p2_left"]).upper()
+            p2_right_key = pygame.key.name(kb["p2_right"]).upper()
+            p2_jump_key = pygame.key.name(kb["p2_jump"]).upper()
+            p2_ability_key = pygame.key.name(kb["p2_slam"]).upper()
             
-            # Line 1: Movement
-            move_text = f"Press [{left_key}] and [{right_key}] to move left and right"
-            draw_text_shadow(canvas, font_med, move_text, VIRTUAL_W//2, y_center - line_spacing, center=True, col=COL_ACCENT_1)
+            line_spacing = 35
             
-            # Line 2: Jump
-            jump_text = f"Press [{jump_key}] to jump"
-            draw_text_shadow(canvas, font_med, jump_text, VIRTUAL_W//2, y_center, center=True, col=COL_ACCENT_1)
-            
-            # Line 3: Ability
-            ability_text = f"Press [{ability_key}] to use your ability!"
-            draw_text_shadow(canvas, font_med, ability_text, VIRTUAL_W//2, y_center + line_spacing, center=True, col=COL_ACCENT_3)
+            if mode == MODE_VERSUS and use_p1 and use_p2:
+                # Split screen vertical - P1 top half, P2 bottom half
+                half_h = VIRTUAL_H // 2
+                
+                # P1 Tutorial (Top half)
+                y_center_p1 = half_h // 2
+                move_text = f"[{p1_left_key}] [{p1_right_key}] to move"
+                draw_text_shadow(canvas, font_small, move_text, VIRTUAL_W//2, y_center_p1 - line_spacing, center=True, col=COL_ACCENT_1)
+                jump_text = f"[{p1_jump_key}] to jump"
+                draw_text_shadow(canvas, font_small, jump_text, VIRTUAL_W//2, y_center_p1, center=True, col=COL_ACCENT_1)
+                ability_text = f"[{p1_ability_key}] for ability!"
+                draw_text_shadow(canvas, font_small, ability_text, VIRTUAL_W//2, y_center_p1 + line_spacing, center=True, col=COL_ACCENT_3)
+                
+                # P2 Tutorial (Bottom half)
+                y_center_p2 = half_h + half_h // 2
+                move_text = f"[{p2_left_key}] [{p2_right_key}] to move"
+                draw_text_shadow(canvas, font_small, move_text, VIRTUAL_W//2, y_center_p2 - line_spacing, center=True, col=COL_ACCENT_2)
+                jump_text = f"[{p2_jump_key}] to jump"
+                draw_text_shadow(canvas, font_small, jump_text, VIRTUAL_W//2, y_center_p2, center=True, col=COL_ACCENT_2)
+                ability_text = f"[{p2_ability_key}] for ability!"
+                draw_text_shadow(canvas, font_small, ability_text, VIRTUAL_W//2, y_center_p2 + line_spacing, center=True, col=COL_ACCENT_3)
+                
+            elif mode == MODE_COOP and use_p1 and use_p2:
+                # Coop - P1 on left, P2 on right
+                y_center = VIRTUAL_H // 2
+                quarter_w = VIRTUAL_W // 4
+                
+                # P1 Tutorial (Left side)
+                draw_text_shadow(canvas, font_small, "PLAYER 1", quarter_w, y_center - line_spacing * 2, center=True, col=COL_ACCENT_1)
+                move_text = f"[{p1_left_key}] [{p1_right_key}] move"
+                draw_text_shadow(canvas, font_small, move_text, quarter_w, y_center - line_spacing, center=True, col=COL_ACCENT_1)
+                jump_text = f"[{p1_jump_key}] jump"
+                draw_text_shadow(canvas, font_small, jump_text, quarter_w, y_center, center=True, col=COL_ACCENT_1)
+                ability_text = f"[{p1_ability_key}] ability"
+                draw_text_shadow(canvas, font_small, ability_text, quarter_w, y_center + line_spacing, center=True, col=COL_ACCENT_3)
+                
+                # P2 Tutorial (Right side)
+                draw_text_shadow(canvas, font_small, "PLAYER 2", quarter_w * 3, y_center - line_spacing * 2, center=True, col=COL_ACCENT_2)
+                move_text = f"[{p2_left_key}] [{p2_right_key}] move"
+                draw_text_shadow(canvas, font_small, move_text, quarter_w * 3, y_center - line_spacing, center=True, col=COL_ACCENT_2)
+                jump_text = f"[{p2_jump_key}] jump"
+                draw_text_shadow(canvas, font_small, jump_text, quarter_w * 3, y_center, center=True, col=COL_ACCENT_2)
+                ability_text = f"[{p2_ability_key}] ability"
+                draw_text_shadow(canvas, font_small, ability_text, quarter_w * 3, y_center + line_spacing, center=True, col=COL_ACCENT_3)
+                
+            else:
+                # Single player or network - just show P1 controls
+                y_center = VIRTUAL_H // 2
+                line_spacing = 45
+                
+                move_text = f"Press [{p1_left_key}] and [{p1_right_key}] to move left and right"
+                draw_text_shadow(canvas, font_med, move_text, VIRTUAL_W//2, y_center - line_spacing, center=True, col=COL_ACCENT_1)
+                
+                jump_text = f"Press [{p1_jump_key}] to jump"
+                draw_text_shadow(canvas, font_med, jump_text, VIRTUAL_W//2, y_center, center=True, col=COL_ACCENT_1)
+                
+                ability_text = f"Press [{p1_ability_key}] to use your ability!"
+                draw_text_shadow(canvas, font_med, ability_text, VIRTUAL_W//2, y_center + line_spacing, center=True, col=COL_ACCENT_3)
 
         if game_over:
             overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
