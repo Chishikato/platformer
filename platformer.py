@@ -2234,7 +2234,6 @@ def main():
         add_btn("Single Player", lambda: set_state(STATE_CHARACTER_SELECT))
         add_btn("Multiplayer", lambda: set_state(STATE_MP_LOBBY), accent=COL_ACCENT_3)
         add_btn("Shop", lambda: set_state(STATE_SHOP))
-        add_btn("Controls", lambda: set_state(STATE_CONTROLS)) # NEW BUTTON
         add_btn("Settings", lambda: set_state(STATE_SETTINGS))
         add_btn("Quit", lambda: stop(), color=(40, 10, 10))
 
@@ -2346,60 +2345,75 @@ def main():
         add_slider("Music Volume", lambda: settings.music_volume, lambda v: (setattr(settings, "music_volume", v), settings.apply_audio()), 0.0, 1.0)
         add_slider("SFX Volume", lambda: settings.sfx_volume, lambda v: setattr(settings, "sfx_volume", v), 0.0, 1.0)
         add_toggle("Screen Mode", ["Window", "Fullscreen", "Borderless"], lambda: settings.screen_mode, lambda idx: (setattr(settings, "screen_mode", idx), apply_screen_mode(window, idx)))
+        
+        y += 20  # Extra spacing before player config
+        
+        # Player Configuration Section - Side by Side Layout with Rebindable Keys
+        def make_update_callback(action_key):
+            def callback(new_code):
+                settings.keybinds[action_key] = new_code
+            return callback
+        
+        # Starting Y for player configs
+        player_config_y = y
+        
+        # Player 1 - Left Side
+        p1_x = 30
+        p1_width = 280
+        p1_button_height = 40
+        p1_spacing = 12
+        
+        settings_widgets.append(SectionHeader(p1_x + p1_width // 2, player_config_y, "PLAYER 1", font_med, COL_ACCENT_1))
+        p1_y = player_config_y + 40
+        
+        p1_actions = [("p1_left", "Left"), ("p1_right", "Right"), ("p1_jump", "Jump"), ("p1_slam", "Ability")]
+        for key, name in p1_actions:
+            current_code = settings.keybinds.get(key, DEFAULT_KEYBINDS[key])
+            rect = pygame.Rect(p1_x, p1_y, p1_width, p1_button_height)
+            btn = KeybindButton(rect, name, current_code, font_small, make_update_callback(key))
+            settings_widgets.append(btn)
+            p1_y += p1_button_height + p1_spacing
+        
+        # Player 2 - Right Side
+        p2_x = VIRTUAL_W - p1_width - 30
+        p2_width = 280
+        p2_button_height = 40
+        p2_spacing = 12
+        
+        settings_widgets.append(SectionHeader(p2_x + p2_width // 2, player_config_y, "PLAYER 2", font_med, COL_ACCENT_2))
+        p2_y = player_config_y + 40
+        
+        p2_actions = [("p2_left", "Left"), ("p2_right", "Right"), ("p2_jump", "Jump"), ("p2_slam", "Ability")]
+        for key, name in p2_actions:
+            current_code = settings.keybinds.get(key, DEFAULT_KEYBINDS[key])
+            rect = pygame.Rect(p2_x, p2_y, p2_width, p2_button_height)
+            btn = KeybindButton(rect, name, current_code, font_small, make_update_callback(key))
+            settings_widgets.append(btn)
+            p2_y += p2_button_height + p2_spacing
+        
+        # Update y to be after player configs
+        y = max(p1_y, p2_y) + 20
+        
+        # Reset Defaults Button (centered)
+        def reset_defaults():
+            settings.keybinds = DEFAULT_KEYBINDS.copy()
+            rebuild_settings_menu()
+        
+        button_width = 180
+        button_height = 40
+        rect_reset = pygame.Rect(VIRTUAL_W // 2 - button_width // 2, y, button_width, button_height)
+        settings_widgets.append(Button(rect_reset, "RESET CONTROLS", font_med, reset_defaults, accent=(255, 80, 80)))
+        y += button_height + 15
+        
+        # Return Button
+        return_btn = Button(pygame.Rect(VIRTUAL_W // 2 - button_width // 2, y, button_width, button_height), "Return", font_med, lambda: set_state(STATE_MAIN_MENU))
+        settings_widgets.append(return_btn)
 
     def rebuild_controls_menu():
         nonlocal controls_scroll
         controls_widgets.clear()
         controls_scroll = 0.0
-        y = 100
-        
-        widget_width = 400 # Wider buttons look better
-        widget_height = 50 # Taller buttons
-        spacing = 15
-        x_centered = VIRTUAL_W // 2 - widget_width // 2
-
-        def make_update_callback(action_key):
-            def callback(new_code):
-                settings.keybinds[action_key] = new_code
-                # We do not save immediately to avoid lag, saved on exit
-            return callback
-
-        # --- Player 1 Section ---
-        controls_widgets.append(SectionHeader(VIRTUAL_W//2, y, "PLAYER 1 CONFIG", font_big, COL_ACCENT_1))
-        y += 50
-        
-        p1_actions = [("p1_left", "Move Left"), ("p1_right", "Move Right"), ("p1_jump", "Jump / Wall Jump"), ("p1_slam", "Slam Attack")]
-        for key, name in p1_actions:
-            current_code = settings.keybinds.get(key, DEFAULT_KEYBINDS[key])
-            rect = pygame.Rect(x_centered, y, widget_width, widget_height)
-            btn = KeybindButton(rect, name, current_code, font_med, make_update_callback(key))
-            controls_widgets.append(btn)
-            y += widget_height + spacing
-
-        y += 30 # Gap between players
-        
-        # --- Player 2 Section ---
-        controls_widgets.append(SectionHeader(VIRTUAL_W//2, y, "PLAYER 2 CONFIG", font_big, COL_ACCENT_2))
-        y += 50
-        
-        p2_actions = [("p2_left", "Move Left"), ("p2_right", "Move Right"), ("p2_jump", "Jump / Wall Jump"), ("p2_slam", "Slam Attack")]
-        for key, name in p2_actions:
-            current_code = settings.keybinds.get(key, DEFAULT_KEYBINDS[key])
-            rect = pygame.Rect(x_centered, y, widget_width, widget_height)
-            btn = KeybindButton(rect, name, current_code, font_med, make_update_callback(key))
-            controls_widgets.append(btn)
-            y += widget_height + spacing
-
-        y += 20
-        
-        # Reset Defaults Button
-        def reset_defaults():
-            settings.keybinds = DEFAULT_KEYBINDS.copy()
-            rebuild_controls_menu()
-            
-        rect_reset = pygame.Rect(x_centered, y, widget_width, 40)
-        controls_widgets.append(Button(rect_reset, "RESET TO DEFAULTS", font_med, reset_defaults, accent=(255, 80, 80)))
-        y += 80 # padding at bottom
+        # Controls menu is now empty - player config moved to settings
 
     def rebuild_mp_lobby():
         """Initial multiplayer menu: Create Room or Join Room"""
@@ -2906,15 +2920,12 @@ def main():
             for b in shop_buttons: b.draw(canvas, dt)
 
         elif game_state == STATE_SETTINGS:
-            draw_text_shadow(canvas, font_big, "System Config", 20, 20)
             for w in settings_widgets:
                 orig_y = w.rect.y
                 w.rect.y = orig_y - settings_scroll
                 if w.rect.bottom > 0 and w.rect.top < VIRTUAL_H: w.draw(canvas)
                 w.rect.y = orig_y
-            
-            back_hint = font_small.render("[ESC] Return", False, (100, 100, 100))
-            canvas.blit(back_hint, (10, VIRTUAL_H - 20))
+            draw_text_shadow(canvas, font_big, "System Config", 20, 20)
 
         elif game_state == STATE_CONTROLS:
             draw_text_shadow(canvas, font_big, "CONTROLS", 20, 20)
@@ -3247,6 +3258,12 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
     screen_shake_timer = 0.0
     session_credits = 0.0
     waiting_for_seed = (net_role == ROLE_CLIENT)
+    
+    # Tutorial system
+    tutorial_active = True
+    tutorial_moved = False
+    tutorial_linger_timer = 0.0
+    tutorial_linger_duration = 3.0
 
     # === DYNAMIC KEYBIND HELPER ===
     kb = settings.keybinds
@@ -3364,6 +3381,12 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
 
         if not game_over and not waiting_for_seed: elapsed += dt
         
+        # Update tutorial state
+        if tutorial_active and tutorial_moved:
+            tutorial_linger_timer += dt
+            if tutorial_linger_timer >= tutorial_linger_duration:
+                tutorial_active = False
+        
         for p in particles: p.update(dt)
         particles[:] = [p for p in particles if p.life > 0]
         for ft in floating_texts: ft.update(dt)
@@ -3411,14 +3434,29 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                     # In Network Play (Client or Host) or Single Player:
                     # The local user controls their character using P1 Keybinds (Standard behavior)
                     i_left, i_right, i_jump, i_slam = get_p1_inputs(keys)
+                    
+                    # Check for first movement for tutorial
+                    if tutorial_active and not tutorial_moved and (i_left or i_right or i_jump or i_slam):
+                        tutorial_moved = True
+                    
                     local_player.update(dt, level, i_left, i_right, i_jump, i_slam)
                 else:
                     # Local Multiplayer (Same Keyboard): P1 uses P1 keys, P2 uses P2 keys
                     if p1_local and use_p1: 
                         i_left, i_right, i_jump, i_slam = get_p1_inputs(keys)
+                        
+                        # Check for first movement for tutorial
+                        if tutorial_active and not tutorial_moved and (i_left or i_right or i_jump or i_slam):
+                            tutorial_moved = True
+                        
                         p1.update(dt, level, i_left, i_right, i_jump, i_slam)
                     if p2_local and use_p2: 
                         i_left, i_right, i_jump, i_slam = get_p2_inputs(keys)
+                        
+                        # Check for first movement for tutorial (p2 can also trigger it)
+                        if tutorial_active and not tutorial_moved and (i_left or i_right or i_jump or i_slam):
+                            tutorial_moved = True
+                        
                         p2.update(dt, level, i_left, i_right, i_jump, i_slam)
 
                 # --- CAMERA UPDATE (HORIZONTAL) ---
@@ -3650,6 +3688,35 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
             pygame.draw.line(canvas, COL_UI_BORDER, (half_w, 0), (half_w, VIRTUAL_H), 4)
         else:
             render_scene(canvas, final_cam_x, final_cam_y, highlight_player=None)
+        
+        # Draw tutorial overlay
+        if tutorial_active and not waiting_for_seed:
+            # Semi-transparent overlay
+            overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 120))
+            canvas.blit(overlay, (0, 0))
+            
+            # Get key names
+            left_key = pygame.key.name(kb["p1_left"]).upper()
+            right_key = pygame.key.name(kb["p1_right"]).upper()
+            jump_key = pygame.key.name(kb["p1_jump"]).upper()
+            ability_key = pygame.key.name(kb["p1_slam"]).upper()
+            
+            # Tutorial text lines
+            y_center = VIRTUAL_H // 2
+            line_spacing = 45
+            
+            # Line 1: Movement
+            move_text = f"Press [{left_key}] and [{right_key}] to move left and right"
+            draw_text_shadow(canvas, font_med, move_text, VIRTUAL_W//2, y_center - line_spacing, center=True, col=COL_ACCENT_1)
+            
+            # Line 2: Jump
+            jump_text = f"Press [{jump_key}] to jump"
+            draw_text_shadow(canvas, font_med, jump_text, VIRTUAL_W//2, y_center, center=True, col=COL_ACCENT_1)
+            
+            # Line 3: Ability
+            ability_text = f"Press [{ability_key}] to use your ability!"
+            draw_text_shadow(canvas, font_med, ability_text, VIRTUAL_W//2, y_center + line_spacing, center=True, col=COL_ACCENT_3)
 
         if game_over:
             overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
@@ -3658,7 +3725,7 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
             
             draw_text_shadow(canvas, font_big, winner_text, VIRTUAL_W//2, VIRTUAL_H//2 - 40, center=True, col=COL_ACCENT_3)
             draw_text_shadow(canvas, font_med, f"CREDITS EARNED: {int(session_credits)}", VIRTUAL_W//2, VIRTUAL_H//2, center=True)
-            draw_text_shadow(canvas, font_small, "PRESS ESC TO RETURN", VIRTUAL_W//2, VIRTUAL_H//2 + 30, center=True)
+            draw_text_shadow(canvas, font_small, "[ESC] Return to Menu", VIRTUAL_W//2, VIRTUAL_H//2 + 30, center=True)
             
             y = VIRTUAL_H // 2 + 60
             canvas.blit(font_small.render("LEADERBOARD:", False, (150, 150, 150)), (VIRTUAL_W // 2 - 40, y))
