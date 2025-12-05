@@ -4186,10 +4186,6 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 if boss.alive:
                     hp_text = font_med.render(f"NECROMANCER: {boss.hp}/{boss.max_hp} HP", False, (255, 50, 50))
                     target_surf.blit(hp_text, (target_surf.get_width() // 2 - hp_text.get_width() // 2, 20))
-                    
-                    state_color = (255, 100, 100) if boss.state == "ATTACKING" else (100, 255, 100)
-                    state_text = font_small.render(f"[{boss.state}]", False, state_color)
-                    target_surf.blit(state_text, (target_surf.get_width() // 2 - state_text.get_width() // 2, 45))
         else:
             # Normal Level Draw
             if bg_obj:

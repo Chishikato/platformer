@@ -1,2 +1,4 @@
 data/save/
 tilesetstuff/
+__pycache__
+data/gfx/NecromancerBoss/test.py
