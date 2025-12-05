@@ -707,17 +707,20 @@ class KeybindButton:
     def handle_event(self, event):
         if self.listening:
             if event.type == pygame.KEYDOWN:
-                if event.key != pygame.K_ESCAPE:
+                if event.key == pygame.K_ESCAPE or event.key == pygame.K_DELETE:
+                    self.listening = False
+                else:
                     self.key_code = event.key
                     self.update_callback(self.key_code)
-                self.listening = False
-            return True # Consume event
+                    self.listening = False
+                return True # Event Consumed
 
         if event.type == pygame.MOUSEMOTION:
             self.hover = self.rect.collidepoint(event.pos)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.rect.collidepoint(event.pos):
                 self.listening = True
+                return True # Consume click
         return False
 
     def draw(self, surf):
@@ -731,7 +734,7 @@ class KeybindButton:
             bg_add = int(40 * pulse)
             bg_col = (bg_base + bg_add, 20, 40) # Reddish tint
             text_col = (255, 200, 200)
-            key_str = "PRESS ANY KEY"
+            key_str = "DELETE TO CANCEL"
         else:
             # STANDARD / HOVER STATE
             if self.hover:
@@ -2411,81 +2414,93 @@ def main():
             settings_widgets.append(Toggle(r, label, font_small, options, get_idx, set_idx))
             y += widget_height + widget_spacing
 
-        # UPDATED: Removed settings.save() from callbacks to prevent disk I/O lag while dragging
-        # Added settings.apply_audio() so you can hear volume changes in real-time
+        # --- Audio & Display Settings ---
         add_slider("Master Volume", lambda: settings.master_volume, lambda v: (setattr(settings, "master_volume", v), settings.apply_audio()), 0.0, 1.0)
         add_slider("Music Volume", lambda: settings.music_volume, lambda v: (setattr(settings, "music_volume", v), settings.apply_audio()), 0.0, 1.0)
         add_slider("SFX Volume", lambda: settings.sfx_volume, lambda v: setattr(settings, "sfx_volume", v), 0.0, 1.0)
         add_toggle("Screen Mode", ["Window", "Fullscreen", "Borderless"], lambda: settings.screen_mode, lambda idx: (setattr(settings, "screen_mode", idx), apply_screen_mode(window, idx)))
         
-        y += 20  # Extra spacing before player config
+        y += 20 
         
-        # Player Configuration Section - Side by Side Layout with Rebindable Keys
+        # --- Navigation Buttons ---
+        button_width = 200
+        button_height = 45
+        
+        # Go to Keybinds Menu
+        rect_controls = pygame.Rect(VIRTUAL_W // 2 - button_width // 2, y, button_width, button_height)
+        settings_widgets.append(Button(rect_controls, "Change keybinds", font_med, lambda: set_state(STATE_CONTROLS), accent=COL_ACCENT_3))
+        
+        y += button_height + 20
+
+        # Return to Main Menu
+        rect_return = pygame.Rect(VIRTUAL_W // 2 - button_width // 2, y, button_width, button_height)
+        settings_widgets.append(Button(rect_return, "Return to Main Menu", font_med, lambda: set_state(STATE_MAIN_MENU)))
+
+    def rebuild_controls_menu():
+        nonlocal controls_scroll
+        controls_widgets.clear()
+        controls_scroll = 0.0
+        
+        y = 80
+        
+        # Helper for keybind updates
         def make_update_callback(action_key):
             def callback(new_code):
                 settings.keybinds[action_key] = new_code
             return callback
         
-        # Starting Y for player configs
-        player_config_y = y
-        
-        # Player 1 - Left Side
+        # --- Player 1 Configuration (Left Side) ---
         p1_x = 30
         p1_width = 280
         p1_button_height = 40
         p1_spacing = 12
         
-        settings_widgets.append(SectionHeader(p1_x + p1_width // 2, player_config_y, "PLAYER 1", font_med, COL_ACCENT_1))
-        p1_y = player_config_y + 40
+        controls_widgets.append(SectionHeader(p1_x + p1_width // 2, y, "PLAYER 1", font_med, COL_ACCENT_1))
+        p1_y = y + 40
         
         p1_actions = [("p1_left", "Left"), ("p1_right", "Right"), ("p1_jump", "Jump"), ("p1_slam", "Ability")]
         for key, name in p1_actions:
             current_code = settings.keybinds.get(key, DEFAULT_KEYBINDS[key])
             rect = pygame.Rect(p1_x, p1_y, p1_width, p1_button_height)
             btn = KeybindButton(rect, name, current_code, font_small, make_update_callback(key))
-            settings_widgets.append(btn)
+            controls_widgets.append(btn)
             p1_y += p1_button_height + p1_spacing
         
-        # Player 2 - Right Side
+        # --- Player 2 Configuration (Right Side) ---
         p2_x = VIRTUAL_W - p1_width - 30
         p2_width = 280
         p2_button_height = 40
         p2_spacing = 12
         
-        settings_widgets.append(SectionHeader(p2_x + p2_width // 2, player_config_y, "PLAYER 2", font_med, COL_ACCENT_2))
-        p2_y = player_config_y + 40
+        controls_widgets.append(SectionHeader(p2_x + p2_width // 2, y, "PLAYER 2", font_med, COL_ACCENT_2))
+        p2_y = y + 40
         
         p2_actions = [("p2_left", "Left"), ("p2_right", "Right"), ("p2_jump", "Jump"), ("p2_slam", "Ability")]
         for key, name in p2_actions:
             current_code = settings.keybinds.get(key, DEFAULT_KEYBINDS[key])
             rect = pygame.Rect(p2_x, p2_y, p2_width, p2_button_height)
             btn = KeybindButton(rect, name, current_code, font_small, make_update_callback(key))
-            settings_widgets.append(btn)
+            controls_widgets.append(btn)
             p2_y += p2_button_height + p2_spacing
         
-        # Update y to be after player configs
-        y = max(p1_y, p2_y) + 20
+        # Update y to be after the lowest player config
+        y = max(p1_y, p2_y) + 30
         
-        # Reset Defaults Button (centered)
+        # --- Reset Button ---
         def reset_defaults():
             settings.keybinds = DEFAULT_KEYBINDS.copy()
-            rebuild_settings_menu()
+            rebuild_controls_menu()
         
         button_width = 180
         button_height = 40
         rect_reset = pygame.Rect(VIRTUAL_W // 2 - button_width // 2, y, button_width, button_height)
-        settings_widgets.append(Button(rect_reset, "RESET CONTROLS", font_med, reset_defaults, accent=(255, 80, 80)))
-        y += button_height + 15
+        controls_widgets.append(Button(rect_reset, "RESET DEFAULTS", font_med, reset_defaults, accent=(255, 80, 80)))
         
-        # Return Button
-        return_btn = Button(pygame.Rect(VIRTUAL_W // 2 - button_width // 2, y, button_width, button_height), "Return", font_med, lambda: set_state(STATE_MAIN_MENU))
-        settings_widgets.append(return_btn)
-
-    def rebuild_controls_menu():
-        nonlocal controls_scroll
-        controls_widgets.clear()
-        controls_scroll = 0.0
-        # Controls menu is now empty - player config moved to settings
+        y += button_height + 20
+        
+        # --- Return to Settings Button ---
+        rect_back = pygame.Rect(VIRTUAL_W // 2 - button_width // 2, y, button_width, button_height)
+        controls_widgets.append(Button(rect_back, "Back to Settings", font_med, lambda: set_state(STATE_SETTINGS)))
 
     def rebuild_mp_lobby():
         """Initial multiplayer menu: Create Room or Join Room"""
@@ -2814,26 +2829,33 @@ def main():
                     sevt = pygame.event.Event(ui_event.type, {**ui_event.dict, "pos": (ui_event.pos[0], ui_event.pos[1] + settings_scroll)})
                 for w in settings_widgets: w.handle_event(sevt)
             elif game_state == STATE_CONTROLS:
-                # Save settings only when exiting the menu
-                if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: 
-                    settings.save()
-                    set_state(STATE_MAIN_MENU)
                 if raw_event.type == pygame.MOUSEWHEEL: controls_scroll -= raw_event.y * 20
+                
+                # Prepare scrolling event
                 sevt = ui_event
                 if ui_event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and "pos" in ui_event.dict:
                     sevt = pygame.event.Event(ui_event.type, {**ui_event.dict, "pos": (ui_event.pos[0], ui_event.pos[1] + controls_scroll)})
                 
-                # Check for active listener first
+                # Check if a widget wants to consume the event first (e.g., KeybindButton listening)
                 consumed = False
                 for w in controls_widgets:
                     if isinstance(w, KeybindButton) and w.listening:
                         if w.handle_event(sevt): 
                             consumed = True
                             break
+                
+                # If not consumed by a listening button, handle normal interactions
                 if not consumed:
-                    for w in controls_widgets:
-                        if hasattr(w, "handle_event"):
-                            w.handle_event(sevt)
+                    # Handle navigation (ESC to go back)
+                    if raw_event.type == pygame.KEYDOWN and raw_event.key == pygame.K_ESCAPE: 
+                        settings.save()
+                        set_state(STATE_SETTINGS)
+                    
+                    # Handle other widget events (Clicks, hover)
+                    else:
+                        for w in controls_widgets:
+                            if hasattr(w, "handle_event"):
+                                w.handle_event(sevt)
 
             elif game_state == STATE_MULTIPLAYER_MENU:
                 
@@ -3008,7 +3030,7 @@ def main():
             draw_text_shadow(canvas, font_big, "CONTROLS", 20, 20)
             
             # Helper text
-            draw_text_shadow(canvas, font_small, "Click to rebind. ESC to cancel.", VIRTUAL_W//2, 50, center=True, col=(150, 150, 180))
+            draw_text_shadow(canvas, font_small, "Click to rebind. Press DELETE to Cancel.", VIRTUAL_W//2, 50, center=True, col=(150, 150, 180))
 
             for w in controls_widgets:
                 orig_y = w.rect.y
@@ -3020,8 +3042,6 @@ def main():
                 
                 w.rect.y = orig_y # Restore original Y
 
-            back_hint = font_small.render("[ESC] Save & Return", False, (100, 100, 100))
-            canvas.blit(back_hint, (10, VIRTUAL_H - 20))
 
         elif game_state == STATE_MULTIPLAYER_MENU:
             draw_text_shadow(canvas, font_big, "Network Lobby", 20, 20)
@@ -3323,8 +3343,8 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
     cam_x_p1, cam_x_p2 = cam_x, cam_x
     cam_y_p1, cam_y_p2 = cam_y, cam_y
     
-    view1_surf = pygame.Surface((VIRTUAL_W // 2, VIRTUAL_H))
-    view2_surf = pygame.Surface((VIRTUAL_W // 2, VIRTUAL_H))
+    view1_surf = pygame.Surface((VIRTUAL_W, VIRTUAL_H // 2))
+    view2_surf = pygame.Surface((VIRTUAL_W, VIRTUAL_H // 2))
 
     distance, elapsed = 0.0, 0.0
     running, game_over = True, False
@@ -3553,11 +3573,18 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                     tx1 = p1.x if p1.alive else (p2.x if p2.alive else p1.x)
                     tx2 = p2.x if p2.alive else (p1.x if p1.alive else p2.x)
                     
+                    ty1 = p1.y if p1.alive else (p2.y if p2.alive else p1.y)
+                    ty2 = p2.y if p2.alive else (p1.y if p1.alive else p2.y)
+
+                    target_cam_y1 = ty1 - (VIRTUAL_H // 4)
+                    target_cam_y2 = ty2 - (VIRTUAL_H // 4)
+
                     cam_x_p1 += ((tx1 - 200) - cam_x_p1) * 0.1
                     cam_x_p2 += ((tx2 - 200) - cam_x_p2) * 0.1
                     
-                    cam_y_p1 = 0 
-                    cam_y_p2 = 0
+                    cam_y_p1 += (target_cam_y1 - cam_y_p1) * 0.1
+                    cam_y_p2 += (target_cam_y2 - cam_y_p2) * 0.1
+
                     cam_x = max(cam_x_p1, cam_x_p2)
                 else:
                     # Single/Network Cam
@@ -3774,10 +3801,10 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
         if mode == MODE_VERSUS and net_role == ROLE_LOCAL_ONLY and use_p1 and use_p2:
             render_scene(view1_surf, cam_x_p1, cam_y_p1, highlight_player=1)
             render_scene(view2_surf, cam_x_p2, cam_y_p2, highlight_player=2)
-            half_w = VIRTUAL_W // 2
+            half_h = VIRTUAL_H // 2
             canvas.blit(view1_surf, (0, 0))
-            canvas.blit(view2_surf, (half_w, 0))
-            pygame.draw.line(canvas, COL_UI_BORDER, (half_w, 0), (half_w, VIRTUAL_H), 4)
+            canvas.blit(view2_surf, (0, half_h))
+            pygame.draw.line(canvas, COL_UI_BORDER, (0, half_h), (VIRTUAL_W, half_h), 4)
         else:
             render_scene(canvas, final_cam_x, final_cam_y, highlight_player=None)
         
