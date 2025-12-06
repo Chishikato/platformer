@@ -33,7 +33,7 @@ BOSS_ROOM_HEIGHT = 480  # Same as VIRTUAL_H
 
 # Rewards
 VICTORY_SCORE = 500
-VICTORY_CREDITS = 50
+VICTORY_CREDITS = 5
 
 # =========================
 # PORTAL CLASS
@@ -165,15 +165,15 @@ class BossRoom:
         self.platforms.append(pygame.Rect(0, self.height - TILE_SIZE * 2, 
                                           self.width, TILE_SIZE))
         # 1: Left
-        self.platforms.append(pygame.Rect(50, self.height - TILE_SIZE * 8,
+        self.platforms.append(pygame.Rect(50, self.height - TILE_SIZE * 7,
                                           TILE_SIZE * 6, TILE_SIZE))
         # 2: Center (High)
         self.platforms.append(pygame.Rect(self.width // 2 - TILE_SIZE * 3,
                                           self.height - TILE_SIZE * 12,
                                           TILE_SIZE * 6, TILE_SIZE))
-        # 3: Right (This is actually the Right platform in previous code, let's locate the highest one)
+        # 3: Right
         self.platforms.append(pygame.Rect(self.width - TILE_SIZE * 7 - 50,
-                                          self.height - TILE_SIZE * 9,
+                                          self.height - TILE_SIZE * 8,
                                           TILE_SIZE * 6, TILE_SIZE))
         # 4: Top Small Platform (The actual highest point)
         self.platforms.append(pygame.Rect(self.width // 2 - TILE_SIZE * 2,
@@ -195,72 +195,58 @@ class BossRoom:
             
         self.victory_claimed = True
         
-        # Spawn credit orbs scattered around the room
-        for i in range(VICTORY_CREDITS):
-            x = random.randint(100, self.width - 100)
-            y = random.randint(100, self.height // 2)
-            orb = {
-                "x": x, "y": y,
-                "vx": random.uniform(-100, 100), "vy": random.uniform(-300, -100),
-                "size": 12, "lifetime": 30.0
-            }
-            self.credit_orbs.append(orb)
-            
-        # --- CHANGED: Spawn portal at the Top Platform (Index 4) ---
+        # 1. Spawn Portal at the Top Platform (Index 4) - Keep this high up
         top_platform = self.platforms[4]
         self.return_portal = pygame.Rect(
             top_platform.centerx - 30,
             top_platform.top - 80, # Sit on top of the platform
             60, 80
         )
+
+        # 2. Spawn Orbs at the FLOOR Platform (Index 0)
+        floor_platform = self.platforms[0] 
         
+        center_x = floor_platform.centerx
+        # Position Y so they hover just above the floor tiles
+        ground_y = floor_platform.top - 15 
+        
+        for i in range(VICTORY_CREDITS):
+            # Spread them out horizontally
+            offset_x = (i - (VICTORY_CREDITS // 2)) * 30 
+            
+            orb = {
+                "x": center_x + offset_x,
+                "y": ground_y,
+                "base_y": ground_y,
+                "size": 14,
+                "value": 10,
+                "float_offset": i * 0.5,
+                "grounded": True 
+            }
+            self.credit_orbs.append(orb)
+            
     def update(self, dt):
         """Update room elements"""
         self.portal_anim_timer += dt
         
-        # Update credit orbs (simple physics)
-        GRAVITY = 1400.0
-        for orb in self.credit_orbs[:]:
-            orb["lifetime"] -= dt
-            if orb["lifetime"] <= 0:
-                self.credit_orbs.remove(orb)
-                continue
-                
-            orb["vy"] += GRAVITY * dt
-            orb["x"] += orb["vx"] * dt
-            orb["y"] += orb["vy"] * dt
-            
-            # Bounce off platforms
-            orb_rect = pygame.Rect(orb["x"] - orb["size"]//2, 
-                                  orb["y"] - orb["size"]//2,
-                                  orb["size"], orb["size"])
-            
-            for platform in self.platforms:
-                if orb_rect.colliderect(platform) and orb["vy"] > 0:
-                    orb["y"] = platform.top - orb["size"]//2
-                    orb["vy"] = -orb["vy"] * 0.6  # Bounce with damping
-                    orb["vx"] *= 0.9
-                    break
-                    
-            # Bounce off walls
-            if orb["x"] < orb["size"]:
-                orb["x"] = orb["size"]
-                orb["vx"] = abs(orb["vx"]) * 0.8
-            elif orb["x"] > self.width - orb["size"]:
-                orb["x"] = self.width - orb["size"]
-                orb["vx"] = -abs(orb["vx"]) * 0.8
+        # --- Floating Logic ---
+        for orb in self.credit_orbs:
+            # Gentle bobbing
+            bob_height = 5
+            bob_speed = 3
+            orb["y"] = orb["base_y"] + math.sin(self.portal_anim_timer * bob_speed + orb["float_offset"]) * bob_height
                 
     def collect_credit(self, player_rect):
-        """Check if player collected any credit orbs, return count collected"""
-        collected = 0
+        """Check if player collected any credit orbs, return TOTAL VALUE collected"""
+        collected_value = 0
         for orb in self.credit_orbs[:]:
-            orb_rect = pygame.Rect(orb["x"] - orb["size"]//2,
+            orb_rect = pygame.Rect(orb["x"] - orb["size"]//2, 
                                   orb["y"] - orb["size"]//2,
                                   orb["size"], orb["size"])
             if player_rect.colliderect(orb_rect):
                 self.credit_orbs.remove(orb)
-                collected += 1
-        return collected
+                collected_value += orb.get("value", 1) 
+        return collected_value
         
     def check_portal_entry(self, player_rect):
         """Check if player entered return portal"""
@@ -288,15 +274,17 @@ class BossRoom:
                 
         # Draw credit orbs
         for orb in self.credit_orbs:
-            glow_size = int(orb["size"] + 2)
+            glow_size = int(orb["size"] + 4)
+            # Subtle pulse
             pulse = (math.sin(self.portal_anim_timer * 8) + 1) * 0.2 + 0.8
             r = min(255, int(255 * pulse))
             g = min(255, int(215 * pulse))
             glow_color = (r, g, 0)
             
+            # Enhanced glow
             pygame.draw.circle(surf, glow_color, (int(orb["x"]), int(orb["y"])), glow_size)
             pygame.draw.circle(surf, (255, 215, 0), (int(orb["x"]), int(orb["y"])), int(orb["size"]))
-            pygame.draw.circle(surf, (255, 255, 220), (int(orb["x"]), int(orb["y"])), max(1, int(orb["size"]) - 2))
+            pygame.draw.circle(surf, (255, 255, 220), (int(orb["x"]), int(orb["y"])), max(1, int(orb["size"]) - 3))
             
         # Draw return portal
         if self.return_portal:
@@ -362,6 +350,9 @@ class NecromancerBoss:
         self.state = "ATTACKING"
         self.state_timer = random.uniform(ATTACK_DURATION_MIN, ATTACK_DURATION_MAX)
         
+        # --- Recovery Timer to prevent damage while flying up ---
+        self.recovery_timer = 0.0 
+
         # Damage Cap Counter
         self.damage_taken_this_phase = 0
         
@@ -411,6 +402,10 @@ class NecromancerBoss:
     def update(self, dt, player_x, player_y, player_rect):
         """Update boss AI, movement, and attacks"""
         
+        # --- Update Recovery Timer ---
+        if self.recovery_timer > 0:
+            self.recovery_timer -= dt
+
         # Handle Death Animation Correctly
         if not self.alive:
             if self.visible:
@@ -450,6 +445,10 @@ class NecromancerBoss:
             if self.state_timer <= 0:
                 # Transition back to ATTACKING
                 self.state = "ATTACKING"
+                
+                # --- Set recovery timer to cover the flight up ---
+                self.recovery_timer = 2.0 
+                
                 duration = random.uniform(ATTACK_DURATION_MIN, ATTACK_DURATION_MAX)
                 if self.hp == 1:
                     duration /= ENRAGE_ATTACK_SPEED_MULTIPLIER
@@ -4389,7 +4388,7 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                                         boss_room.activate_victory()
                                 
                                 # CASE B: Boss hits Player (Contact Damage)
-                                elif boss.state == "ATTACKING":
+                                elif boss.state == "ATTACKING" and boss.recovery_timer <= 0:
                                     # Push player away and deal damage
                                     local_player.take_damage(1, source_x=boss.x + boss.w//2)
                     
@@ -4404,6 +4403,8 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                         boss_room = None
                         boss = None
                         boss_defeated = False
+
+                        level.portal = None
                         
                         local_player.x = PORTAL_SPAWN_DISTANCE + 100 
                         local_player.y = GROUND_LEVEL - 100
