@@ -36,6 +36,58 @@ VICTORY_SCORE = 500
 VICTORY_CREDITS = 5
 
 # =========================
+# PORTAL SPRITE LOADING
+# =========================
+# Portal frames will be loaded after pygame is initialized
+_portal_frames = None
+
+def _load_portal_frames():
+    """Load portal spritesheet frames (called after pygame init)"""
+    global _portal_frames
+    if _portal_frames is not None:
+        return _portal_frames
+    
+    portal_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                               "data", "gfx", "PORTAL BLUE-Sheet.png")
+    
+    if not os.path.exists(portal_path):
+        print(f"Warning: Portal spritesheet not found: {portal_path}")
+        # Create placeholder frame
+        s = pygame.Surface((64, 64), pygame.SRCALPHA)
+        pygame.draw.circle(s, (0, 234, 255), (32, 32), 30)
+        _portal_frames = [s]
+        return _portal_frames
+    
+    try:
+        sheet = pygame.image.load(portal_path).convert_alpha()
+        sheet_w = sheet.get_width()
+        sheet_h = sheet.get_height()
+        
+        # Assuming horizontal strip - detect frame count
+        # The spritesheet appears to be 8 frames in a row
+        num_frames = 8
+        frame_w = sheet_w // num_frames
+        frame_h = sheet_h
+        
+        frames = []
+        for i in range(num_frames):
+            rect = pygame.Rect(i * frame_w, 0, frame_w, frame_h)
+            frame = pygame.Surface((frame_w, frame_h), pygame.SRCALPHA)
+            frame.blit(sheet, (0, 0), rect)
+            # Scale up for visibility (1.5x)
+            scaled = pygame.transform.scale(frame, (int(frame_w * 1.5), int(frame_h * 1.5)))
+            frames.append(scaled)
+        
+        _portal_frames = frames
+        return _portal_frames
+    except Exception as e:
+        print(f"Error loading portal spritesheet: {e}")
+        s = pygame.Surface((64, 64), pygame.SRCALPHA)
+        pygame.draw.circle(s, (0, 234, 255), (32, 32), 30)
+        _portal_frames = [s]
+        return _portal_frames
+
+# =========================
 # PORTAL CLASS
 # =========================
 class Portal:
@@ -47,16 +99,24 @@ class Portal:
         self.w = 60
         self.h = 100
         self.anim_timer = 0.0
+        self.frame_index = 0
         self.particles = []
+        # Load portal frames
+        self.frames = _load_portal_frames()
         
     def update(self, dt):
         """Update portal animation"""
         self.anim_timer += dt
         
-        # Spawn swirling particles
-        if random.random() < 0.3:
+        # Update frame animation (10 FPS)
+        if self.anim_timer >= 0.1:
+            self.anim_timer -= 0.1
+            self.frame_index = (self.frame_index + 1) % len(self.frames)
+        
+        # Spawn swirling particles (reduced for spritesheet portal)
+        if random.random() < 0.15:
             angle = random.uniform(0, math.pi * 2)
-            radius = random.uniform(10, 35)
+            radius = random.uniform(25, 50)
             px = self.x + self.w // 2 + math.cos(angle) * radius
             py = self.y + self.h // 2 + math.sin(angle) * radius
             
@@ -65,8 +125,8 @@ class Portal:
                 "y": py,
                 "angle": angle,
                 "radius": radius,
-                "lifetime": 1.0,
-                "speed": random.uniform(20, 40)
+                "lifetime": 0.8,
+                "speed": random.uniform(15, 30)
             }
             self.particles.append(particle)
             
@@ -74,7 +134,7 @@ class Portal:
         for p in self.particles[:]:
             p["lifetime"] -= dt
             p["angle"] += p["speed"] * dt * 0.1
-            p["radius"] -= dt * 20
+            p["radius"] -= dt * 15
             
             if p["lifetime"] <= 0 or p["radius"] < 0:
                 self.particles.remove(p)
@@ -91,50 +151,35 @@ class Portal:
         return player_rect.colliderect(self.rect())
         
     def draw(self, surf, cam_x, cam_y):
-        """Draw portal with particles and effects"""
+        """Draw portal sprite with particle effects"""
         draw_x = self.x - cam_x
         draw_y = self.y - cam_y
         center_x = draw_x + self.w // 2
         center_y = draw_y + self.h // 2
         
-        # Draw particles
+        # Draw particles behind portal
         for p in self.particles:
             px = p["x"] - cam_x
             py = p["y"] - cam_y
-            alpha = int(p["lifetime"] * 255)
-            size = max(2, int(p["lifetime"] * 6))
+            size = max(2, int(p["lifetime"] * 5))
             
-            # Purple/pink/cyan gradient
-            if p["radius"] > 20:
-                color = (200, 100, 255)
+            # Blue/cyan particles to match blue portal
+            if p["radius"] > 30:
+                color = (100, 150, 255)
             else:
                 color = (0, 234, 255)
                 
             pygame.draw.circle(surf, color, (int(px), int(py)), size)
-            
-        # Central portal glow
-        for r in range(40, 0, -8):
-            alpha = int((r / 40.0) * 80)
-            glow_surf = pygame.Surface((r*2, r*2), pygame.SRCALPHA)
-            color_val = int(100 + math.sin(self.anim_timer * 3) * 50)
-            pygame.draw.circle(glow_surf, (color_val, 100, 255, alpha), (r, r), r)
-            surf.blit(glow_surf, (center_x - r, center_y - r))
-            
-        # Outer ring
-        ring_radius = 45 + math.sin(self.anim_timer * 2) * 3
-        pygame.draw.circle(surf, (150, 50, 255), 
-                          (int(center_x), int(center_y)), int(ring_radius), 4)
         
-        # Inner ring
-        inner_radius = 35 + math.sin(self.anim_timer * 3) * 2
-        pygame.draw.circle(surf, (0, 234, 255),
-                          (int(center_x), int(center_y)), int(inner_radius), 3)
-                                  
-        # Pulsing center
-        pulse = (math.sin(self.anim_timer * 5) + 1) * 0.5
-        center_size = int(15 + pulse * 10)
-        pygame.draw.circle(surf, (255, 200, 255),
-                          (int(center_x), int(center_y)), center_size)
+        # Draw portal sprite centered
+        if self.frames:
+            frame = self.frames[self.frame_index]
+            frame_w = frame.get_width()
+            frame_h = frame.get_height()
+            # Center the sprite on the portal position
+            sprite_x = center_x - frame_w // 2
+            sprite_y = center_y - frame_h // 2
+            surf.blit(frame, (int(sprite_x), int(sprite_y)))
 
 # =========================
 # BOSS ROOM CLASS
@@ -154,6 +199,9 @@ class BossRoom:
         # Return portal (appears after boss defeat)
         self.return_portal = None
         self.portal_anim_timer = 0.0
+        self.portal_frame_index = 0
+        # Load portal frames
+        self.portal_frames = _load_portal_frames()
         
         # Victory rewards
         self.credit_orbs = []
@@ -229,6 +277,11 @@ class BossRoom:
         """Update room elements"""
         self.portal_anim_timer += dt
         
+        # Update portal frame animation (10 FPS)
+        if self.portal_frames and self.portal_anim_timer >= 0.1:
+            self.portal_anim_timer -= 0.1
+            self.portal_frame_index = (self.portal_frame_index + 1) % len(self.portal_frames)
+        
         # --- Floating Logic ---
         for orb in self.credit_orbs:
             # Gentle bobbing
@@ -291,32 +344,19 @@ class BossRoom:
             self._draw_portal(surf, self.return_portal)
             
     def _draw_portal(self, surf, portal):
-        """Draw animated portal effect"""
+        """Draw animated portal sprite"""
         center_x = portal.centerx
         center_y = portal.centery
         
-        # Rotating particles
-        num_particles = 12
-        radius = 35
-        for i in range(num_particles):
-            angle = (i / num_particles) * math.pi * 2 + self.portal_anim_timer * 2
-            px = center_x + math.cos(angle) * radius
-            py = center_y + math.sin(angle) * radius
-            
-            # Cyan particles
-            size = 4 + math.sin(self.portal_anim_timer * 3 + i) * 2
-            pygame.draw.circle(surf, (0, 234, 255), (int(px), int(py)), int(size))
-            
-        # Central glow
-        for r in range(30, 0, -6):
-            alpha = int((r / 30.0) * 100)
-            glow_surf = pygame.Surface((r*2, r*2), pygame.SRCALPHA)
-            pygame.draw.circle(glow_surf, (0, 234, 255, alpha), (r, r), r)
-            surf.blit(glow_surf, (center_x - r, center_y - r))
-            
-        # Portal frame
-        pygame.draw.circle(surf, (0, 200, 220), (center_x, center_y), 40, 3)
-        pygame.draw.circle(surf, (0, 150, 180), (center_x, center_y), 36, 2)
+        # Draw portal sprite centered
+        if self.portal_frames:
+            frame = self.portal_frames[self.portal_frame_index]
+            frame_w = frame.get_width()
+            frame_h = frame.get_height()
+            # Center the sprite on the portal position
+            sprite_x = center_x - frame_w // 2
+            sprite_y = center_y - frame_h // 2
+            surf.blit(frame, (int(sprite_x), int(sprite_y)))
 
 # =========================
 # NECROMANCER BOSS CLASS
