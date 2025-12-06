@@ -2603,9 +2603,11 @@ class LevelManager:
         self.enemy_timer = 0
         self.orb_timer = 0.0
         
-        # Boss portal (spawns at x=2000)
+        # Boss portal
         self.portal = None
         self.portal_spawned = False
+        # Store safe coordinates for return trip
+        self.return_safe_pos = (100, GROUND_LEVEL - 60)
 
     def _add_segment(self, x_start, width, y):
         self.platform_segments.append(pygame.Rect(int(x_start), int(y), int(width), TILE_SIZE))
@@ -2628,90 +2630,88 @@ class LevelManager:
         else:
             self.current_stage = 3 # Endless
 
-        # Determine Height Change (Delta Y)
-        # Note: Negative Delta Y means going UP (screen coordinates)
-        # Max Jump Height with current physics is approx 108 pixels.
-        # We limit upward generation to 4 tiles (80px) to be safe.
-        
-        min_change = 0
-        max_change = 0
+        # --- PORTAL SPAWN CHECK ---
+        # Check if we have reached the distance and haven't spawned a portal yet
+        is_portal_segment = False
+        if not self.portal_spawned and self.generated_right_x >= PORTAL_SPAWN_DISTANCE:
+            is_portal_segment = True
 
-        if self.current_stage == 1:
-            # Mostly flat, slight bumps
-            min_change = -2 # Up 2 tiles
-            max_change = 2  # Down 2 tiles
-        elif self.current_stage == 2:
-            # Verticality intro
-            min_change = -4 # Up 4 tiles (Hard jump)
-            max_change = 5  # Down 5 tiles
+        # --- Height & Gap Calculation ---
+        if is_portal_segment:
+            # FORCE SAFE PLATFORM: Flat alignment, Wide platform, Small gap
+            delta_tiles = 0
+            new_y = self.last_platform_y # Keep height same as previous for easy access
+            
+            base_gap = 40 # Small jump
+            plat_w = TILE_SIZE * 20 # Extra wide for boss entrance
         else:
-            # Endless chaos
-            min_change = -4
-            max_change = 8  # Big drops
+            # Normal Random Generation
+            min_change, max_change = 0, 0
+            if self.current_stage == 1:
+                min_change, max_change = -2, 2
+            elif self.current_stage == 2:
+                min_change, max_change = -4, 5
+            else:
+                min_change, max_change = -4, 8
 
-        delta_tiles = self.rng.randint(min_change, max_change)
-        new_y = self.last_platform_y + (delta_tiles * TILE_SIZE)
+            delta_tiles = self.rng.randint(min_change, max_change)
+            new_y = self.last_platform_y + (delta_tiles * TILE_SIZE)
 
-        # Clamp Y to keep play area reasonable
-        # Don't go too high (0) or fall into the void (VIRTUAL_H)
-        min_allowed_y = TILE_SIZE * 4
-        max_allowed_y = VIRTUAL_H - TILE_SIZE * 2
-        
-        if new_y < min_allowed_y: 
-            new_y = min_allowed_y + TILE_SIZE # Bounce down
-        elif new_y > max_allowed_y: 
-            new_y = max_allowed_y - TILE_SIZE # Bounce up
+            # Clamp Y
+            min_allowed_y = TILE_SIZE * 4
+            max_allowed_y = VIRTUAL_H - TILE_SIZE * 2
+            if new_y < min_allowed_y: new_y = min_allowed_y + TILE_SIZE
+            elif new_y > max_allowed_y: new_y = max_allowed_y - TILE_SIZE
 
-        # Determine Gap Width based on Height Change
-        # If we are going UP (new_y < last_y), the gap must be smaller
-        # If we are going DOWN (new_y > last_y), the gap can be larger
-        
-        base_gap = 60
-        gap_variance = self.rng.randint(0, 40)
-        
-        height_diff = self.last_platform_y - new_y # Positive = Going UP
-        
-        if height_diff > 0:
-            # We are jumping UP. Reduce gap significantly.
-            # For every tile up (20px), reduce gap capacity
-            penalty = (height_diff / TILE_SIZE) * 12
-            final_gap = max(40, (base_gap + gap_variance) - penalty)
-        else:
-            # We are jumping DOWN or FLAT. Increase gap.
-            bonus = (abs(height_diff) / TILE_SIZE) * 8
-            final_gap = base_gap + gap_variance + bonus
-            # Cap max gap to avoid impossible horizontal leaps (Max flat jump is ~170px)
-            final_gap = min(final_gap, 150)
+            # Gap logic
+            base_gap = 60
+            gap_variance = self.rng.randint(0, 40)
+            height_diff = self.last_platform_y - new_y
+            
+            if height_diff > 0: # Going Up
+                penalty = (height_diff / TILE_SIZE) * 12
+                final_gap = max(40, (base_gap + gap_variance) - penalty)
+            else: # Going Down
+                bonus = (abs(height_diff) / TILE_SIZE) * 8
+                final_gap = min(base_gap + gap_variance + bonus, 150)
+            
+            base_gap = final_gap # Assign for usage below
+            plat_w = TILE_SIZE * self.rng.randint(4, 12)
 
-        final_gap = int(final_gap)
-        
         # Calculate X position
-        new_x = self.generated_right_x + final_gap
+        new_x = self.generated_right_x + int(base_gap)
 
-        plat_w = TILE_SIZE * self.rng.randint(4, 12)
-        
         # Add the segment
         self._add_segment(new_x, plat_w, new_y)
         
         # Update trackers
         self.generated_right_x = new_x + plat_w
-        self.last_platform_y = new_y # IMPORTANT: Save for next loop
+        self.last_platform_y = new_y
         self.gen_count += 1
 
+        # --- SPAWN ENTITIES ---
         
-        # Enemy Spawn Chance
+        if is_portal_segment:
+            # Spawn Portal in the middle of this safe segment
+            portal_x = new_x + plat_w // 2 - 30
+            portal_y = new_y - 100 
+            self.portal = Portal(portal_x, portal_y)
+            self.portal_spawned = True
+            
+            # Store the safe return position (slightly to the right of portal)
+            self.return_safe_pos = (portal_x + 100, new_y)
+            return # Don't spawn enemies or spikes on the portal platform!
+
+        # Normal Spawning Logic (Enemies, Spikes, Orbs)
         enemy_chance = 0.3
         if self.current_stage == 2: enemy_chance = 0.5
         if self.current_stage == 3: enemy_chance = 0.7
         
-        ref_width = 32
-        ref_height = 32
+        ref_width, ref_height = 32, 32
         if "walk" in self.enemy_sprites and self.enemy_sprites["walk"]:
             ref_surf = self.enemy_sprites["walk"][0]
-            ref_width = ref_surf.get_width()
-            ref_height = ref_surf.get_height()
+            ref_width, ref_height = ref_surf.get_width(), ref_surf.get_height()
 
-        # Only spawn enemies on platforms wide enough
         if self.rng.random() < enemy_chance and plat_w > TILE_SIZE * 6:
             ex = new_x + plat_w // 2 - ref_width // 2
             ey = new_y - ref_height
@@ -2721,22 +2721,14 @@ class LevelManager:
             spike_x = new_x + self.rng.randint(3, (plat_w // TILE_SIZE) - 3) * TILE_SIZE
             self.obstacles.append(pygame.Rect(spike_x, new_y - TILE_SIZE, TILE_SIZE, TILE_SIZE))
 
-        # Orb Chance
         if self.rng.random() < 0.5:
              orb_size = TILE_SIZE // 2
              ox = new_x + plat_w // 2 - orb_size // 2
              rect = pygame.Rect(ox, new_y - 3 * TILE_SIZE, orb_size, orb_size)
-             
-             # 8% Chance to spawn a Health Orb instead of a Point Orb
              if self.rng.random() < 0.08: 
                  self.health_orbs.append(rect)
              else:
                  self.orbs.append(rect)
-
-        if not self.portal_spawned and self.generated_right_x >= 2000:
-            portal_y = new_y - 100  # Above the platform
-            self.portal = Portal(PORTAL_SPAWN_DISTANCE, portal_y)
-            self.portal_spawned = True
 
     def spawn_credit(self, x, y, value):
         self.dropped_credits.append(Credit(x, y, value))
@@ -2755,7 +2747,7 @@ class LevelManager:
         self.platform_segments = [s for s in self.platform_segments if s.right > cleanup_x]
         self.obstacles = [o for o in self.obstacles if o.right > cleanup_x]
         self.orbs = [o for o in self.orbs if o.right > cleanup_x]
-        self.health_orbs = [h for h in self.health_orbs if h.right > cleanup_x] # <--- NEW: Cleanup
+        self.health_orbs = [h for h in self.health_orbs if h.right > cleanup_x]
         self.enemies = [e for e in self.enemies if e.alive and e.x > cleanup_x]
         
         for c in self.dropped_credits: c.update(dt, self)
