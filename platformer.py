@@ -4396,12 +4396,18 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                         boss = None
                         boss_defeated = False
 
+                        # Remove the used portal
                         level.portal = None
+                        local_player.x = level.return_safe_pos[0]
+                        local_player.y = level.return_safe_pos[1] - local_player.h
                         
-                        local_player.x = PORTAL_SPAWN_DISTANCE + 100 
-                        local_player.y = GROUND_LEVEL - 100
+                        # Reset velocity
                         local_player.vx = 0
                         local_player.vy = 0
+                        
+                        # Reset abilities
+                        local_player.slam_active = False
+                        local_player.dash_active = False
                 
                 # --- UPDATE PLAYERS ---
                 current_level = boss_room if in_boss_room else level
