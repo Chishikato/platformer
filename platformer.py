@@ -129,7 +129,7 @@ class Portal:
         inner_radius = 35 + math.sin(self.anim_timer * 3) * 2
         pygame.draw.circle(surf, (0, 234, 255),
                           (int(center_x), int(center_y)), int(inner_radius), 3)
-                          
+                                  
         # Pulsing center
         pulse = (math.sin(self.anim_timer * 5) + 1) * 0.5
         center_size = int(15 + pulse * 10)
@@ -681,16 +681,16 @@ BASE_GRAVITY = 1400.0
 BASE_JUMP_VEL = -550.0
 BASE_PLAYER_SPEED = 220.0
 WALL_SLIDE_SPEED = 50.0 
-WALL_JUMP_X = 250.0           
+WALL_JUMP_X = 250.0            
 WALL_JUMP_Y = -450.0        
 
 # Horizontal Scroll Constants
-SCROLL_OFFSET_X = 200.0          
+SCROLL_OFFSET_X = 200.0           
 
-BASE_SLAM_SPEED = 900.0                    
+BASE_SLAM_SPEED = 900.0                     
 BASE_SLAM_COOLDOWN = 1.0                
-SLAM_BASE_RADIUS = 40.0            
-SLAM_RADIUS_PER_HEIGHT = 0.25      
+SLAM_BASE_RADIUS = 40.0             
+SLAM_RADIUS_PER_HEIGHT = 0.25       
 
 # Dash Constants (NEW)
 BASE_DASH_SPEED = 800.0
@@ -3404,11 +3404,11 @@ def main():
         
         # Return button (left)
         mp_buttons.append(Button(pygame.Rect(80, VIRTUAL_H - 70, 140, 40), 
-                                "Return", font_med, lambda: (network.close(), set_state(STATE_MP_LOBBY))))
+                                 "Return", font_med, lambda: (network.close(), set_state(STATE_MP_LOBBY))))
         
         # Refresh button (center)
         mp_buttons.append(Button(pygame.Rect(VIRTUAL_W // 2 - 70, VIRTUAL_H - 70, 140, 40), 
-                                "Refresh", font_med, refresh_action))
+                                 "Refresh", font_med, refresh_action))
         
         # Join Room button (right) - disabled if no room selected
         def join_room_action():
@@ -3416,7 +3416,7 @@ def main():
                 network.join(selected_room)
         
         join_btn = Button(pygame.Rect(VIRTUAL_W - 220, VIRTUAL_H - 70, 140, 40), 
-                         "Join Room", font_med, join_room_action, accent=COL_ACCENT_3)
+                          "Join Room", font_med, join_room_action, accent=COL_ACCENT_3)
         
         if not selected_room:
             join_btn.disabled = True
@@ -4004,6 +4004,7 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
     
     # Define and load Game BGM
     GAME_BGM_PATH = get_asset_path("data", "sfx", "pck404_lets_play.ogg")
+    BOSS_BGM_PATH = get_asset_path("data", "sfx", "pck404_futuristic_run.wav")
     
     if os.path.exists(GAME_BGM_PATH):
         try:
@@ -4335,6 +4336,16 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                         local_player.y = boss_room.height - 150
                         local_player.vx = 0
                         local_player.vy = 0
+
+                        # === PLAY BOSS MUSIC ===
+                        if os.path.exists(BOSS_BGM_PATH):
+                            try:
+                                pygame.mixer.music.stop()
+                                pygame.mixer.music.load(BOSS_BGM_PATH)
+                                pygame.mixer.music.set_volume(settings.music_volume * settings.master_volume)
+                                pygame.mixer.music.play(-1)
+                            except Exception as e:
+                                print(f"Error loading Boss BGM: {e}")
                 
                 # --- BOSS ROOM UPDATE ---
                 if in_boss_room and boss_room:
@@ -4408,6 +4419,16 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                         # Reset abilities
                         local_player.slam_active = False
                         local_player.dash_active = False
+
+                        # === PLAY NORMAL MUSIC ===
+                        if os.path.exists(GAME_BGM_PATH):
+                            try:
+                                pygame.mixer.music.stop()
+                                pygame.mixer.music.load(GAME_BGM_PATH)
+                                pygame.mixer.music.set_volume(settings.music_volume * settings.master_volume)
+                                pygame.mixer.music.play(-1)
+                            except Exception as e:
+                                print(f"Error loading Game BGM: {e}")
                 
                 # --- UPDATE PLAYERS ---
                 current_level = boss_room if in_boss_room else level
