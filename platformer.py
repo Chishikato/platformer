@@ -443,6 +443,33 @@ class NecromancerBoss:
             return True
             
         return False
+    
+    def update_visuals_only(self, dt):
+        # Update projectile movement (visual only)
+        for proj in self.projectiles[:]:
+            proj["x"] += proj["vx"] * dt
+            proj["y"] += proj["vy"] * dt
+            proj["lifetime"] -= dt
+            if (proj["lifetime"] <= 0 or 
+                proj["x"] < -50 or proj["x"] > self.room_width + 50 or 
+                proj["y"] < -50 or proj["y"] > self.room_height + 50):
+                self.projectiles.remove(proj)
+        
+        # Update fire visuals
+        for fire in self.platform_fires[:]:
+            if not fire["active"]:
+                fire["warning_timer"] -= dt
+                if fire["warning_timer"] <= 0:
+                    fire["active"] = True
+                    fire["fire_timer"] = fire["fire_duration"]
+            else:
+                fire["fire_timer"] -= dt
+                if fire["fire_timer"] <= 0:
+                    self.platform_fires.remove(fire)
+
+        # Update body animation
+        self._update_animation(dt)
+        self.invul_timer -= dt
         
     def update(self, dt, player_x, player_y, player_rect):
         """Update boss AI, movement, and attacks"""
@@ -1820,10 +1847,20 @@ class NetworkManager:
         alive_int = 1 if alive else 0
         flash_int = 1 if flash_on_invul else 0
         
-        # Added flash_int to the end of the stats block
         line = f"{px:.2f},{py:.2f},{alive_int},{int(score)},{int(seed)},{int(hp)},{vx:.2f},{vy:.2f},{facing_int},{int(max_hp)},{slam_int},{dash_int},{invul_timer:.2f},{flash_int}|{action},{int(frame)}\n"
-        try: self.sock.sendall(line.encode("utf-8"))
-        except: pass
+        
+        try: 
+            self.sock.sendall(line.encode("utf-8"))
+        except (BrokenPipeError, ConnectionResetError):
+            # The other player is gone. Close immediately to prevent freezing.
+            print("Network Error: Pipe Broken")
+            self.close()
+        except BlockingIOError:
+            # Buffer is full, skip this packet but don't crash
+            pass
+        except Exception as e:
+            print(f"Send Error: {e}")
+            self.close()
     
     def send_hit(self, enemy_id, damage):
         """Send a packet telling the host we hit an enemy"""
@@ -1875,11 +1912,14 @@ class NetworkManager:
         if self.connected: 
             dead_int = 1 if is_dead else 0
             face_int = 1 if facing_right else 0
-            # Packet: E | id, x, y, facing, hp, dead
             msg = f"E|{index},{int(x)},{int(y)},{face_int},{int(hp)},{dead_int}\n"
             try:
                 self.sock.sendall(msg.encode("utf-8"))
-            except:
+            except (BrokenPipeError, ConnectionResetError):
+                self.close()
+            except BlockingIOError:
+                pass
+            except Exception:
                 pass
     
     # UPDATED: Send full boss state including position/anim
@@ -3914,7 +3954,13 @@ def main():
 
         # Event Handling (Mouse coordinates adjusted for scale)
         for raw_event in pygame.event.get():
-            if raw_event.type == pygame.QUIT: running = False
+            if raw_event.type == pygame.QUIT: 
+                if network.connected:
+                    try:
+                        network.send_lobby_exit() # Try to tell them we are leaving
+                        network.sock.close()      # Force close socket
+                    except: pass
+                running = False
             elif raw_event.type == pygame.VIDEORESIZE:
                 window = pygame.display.set_mode(raw_event.size, pygame.RESIZABLE)
             
@@ -4708,6 +4754,13 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 return
             elif event.type == pygame.VIDEORESIZE: window = pygame.display.set_mode(event.size, pygame.RESIZABLE)
 
+        if net_role != ROLE_LOCAL_ONLY and not network.connected:
+            if not game_over:
+                game_over = True
+                winner_text = "OPPONENT DISCONNECTED"
+                # Stop physics/movement immediately
+                running = True
+
         keys = pygame.key.get_pressed()
         if net_role != ROLE_LOCAL_ONLY:
             network.poll_remote_state()
@@ -4933,112 +4986,143 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                     boss_room.update(dt)
                     
                     if boss:
-                        # --- 1. TARGET SELECTION (FIXED) ---
-                        # Host (or Single) decides who the boss attacks
-                        # It targets the closest LIVING player
-                        boss_target_x = boss_room.width // 2
-                        boss_target_y = boss_room.height // 2
-                        boss_target_rect = pygame.Rect(0,0,0,0)
-
+                        # --- 1. HOST: RUN AI & PHYSICS ---
                         if net_role != ROLE_CLIENT:
+                            # Host determines target (Closest living player)
                             targets = []
-                            # Add living local players
                             if net_role == ROLE_LOCAL_ONLY:
                                 if use_p1 and p1.alive: targets.append(p1)
                                 if use_p2 and p2.alive: targets.append(p2)
                             else:
-                                # Host logic: consider Self and Client
+                                # Host tracks Local (Self) and Remote (Client)
                                 if local_player.alive: targets.append(local_player)
                                 if remote_player.alive: targets.append(remote_player)
                             
+                            boss_target_x = boss_room.width // 2
+                            boss_target_y = boss_room.height // 2
+                            boss_target_rect = pygame.Rect(0,0,0,0)
+
                             if targets:
-                                # Find closest target to boss
                                 best_target = min(targets, key=lambda p: math.hypot(p.x - boss.x, p.y - boss.y))
                                 boss_target_x = best_target.x + best_target.w // 2
                                 boss_target_y = best_target.y + best_target.h // 2
                                 boss_target_rect = best_target.rect()
-                            else:
-                                # Everyone is dead: Boss chills in center
-                                boss_target_x = boss_room.width // 2
-                                boss_target_y = 100
+                            
+                            # Host updates Boss Logic
+                            boss.update(dt, boss_target_x, boss_target_y, boss_target_rect)
+
+                        # --- 2. CLIENT: SYNC & VISUALS ---
                         else:
-                            # Client just uses their own pos for local update interpolation, 
-                            # but logic is overwritten by network packet below
-                            boss_target_x = local_player.x + local_player.w // 2
-                            boss_target_y = local_player.y + local_player.h // 2
-                            boss_target_rect = local_player.rect()
+                            # Client applies Network State (Position/HP/Anim)
+                            rb_state = network.get_boss_state()
+                            boss.hp = rb_state["hp"]
+                            if not rb_state["dead"]:
+                                # Interpolate movement
+                                boss.x += (rb_state["x"] - boss.x) * 0.2
+                                boss.y += (rb_state["y"] - boss.y) * 0.2
+                                # Sync Animation Action
+                                if boss.current_action != rb_state["action"]:
+                                    boss.current_action = rb_state["action"]
+                                    boss.frame_index = rb_state["frame"]
+                                    # If boss attacks on server, spawn dummy projectile on client for visuals
+                                    if boss.current_action == "cast" and boss.frame_index == 0:
+                                        boss._attack_magic_arrows(local_player.x, local_player.y)
+                                    if boss.current_action == "attack1" and boss.frame_index == 0:
+                                        boss._attack_platform_fire()
+                            
+                            # Run Client Visual Update (Move projectiles, play anims)
+                            boss.update_visuals_only(dt)
 
-                        # --- 2. UPDATE BOSS ---
-                        projectile_hit = boss.update(dt, boss_target_x, boss_target_y, boss_target_rect)
-                        
-                        # --- 3. COLLISIONS & DAMAGE ---
+                        # --- 3. DAMAGE LOGIC (HOST AUTHORITATIVE) ---
                         if boss.alive:
-                            # Projectile damage (Only allow if local player is actually the target or hit by stray)
-                            # Simple check: collide against local player
-                            local_hit = False
-                            for proj in boss.projectiles:
-                                p_rect = pygame.Rect(proj["x"]-4, proj["y"]-4, 8, 8)
-                                if p_rect.colliderect(local_player.rect()):
-                                    boss.projectiles.remove(proj)
-                                    local_hit = True
-                                    break
+                            players_to_check = []
                             
-                            if local_hit and local_player.invul_timer <= 0 and local_player.alive:
-                                local_player.take_damage(1)
-                            
-                            # Fire damage check
-                            if boss.check_platform_fire_damage(local_player.rect()) and local_player.alive:
-                                if not hasattr(local_player, 'fire_damage_timer'):
-                                    local_player.fire_damage_timer = 0
-                                local_player.fire_damage_timer -= dt
-                                if local_player.fire_damage_timer <= 0:
-                                    local_player.take_damage(1)
-                                    local_player.fire_damage_timer = 0.5
-                            else:
-                                if hasattr(local_player, 'fire_damage_timer'):
-                                    local_player.fire_damage_timer = 0
+                            if net_role == ROLE_LOCAL_ONLY:
+                                if use_p1 and p1.alive: players_to_check.append(p1)
+                                if use_p2 and p2.alive: players_to_check.append(p2)
+                            elif net_role == ROLE_HOST:
+                                # Host checks collisions for SELF and CLIENT
+                                if local_player.alive: players_to_check.append(local_player)
+                                if remote_player.alive: players_to_check.append(remote_player)
+                            # Client checks nothing (Wait for damage packet)
+
+                            for pl in players_to_check:
+                                took_damage = False
+                                
+                                # A. Check Projectiles
+                                for proj in boss.projectiles[:]:
+                                    p_rect = pygame.Rect(proj["x"]-4, proj["y"]-4, 8, 8)
+                                    if p_rect.colliderect(pl.rect()):
+                                        # Only remove projectile if on Host (Client projectiles are visual ghosts)
+                                        if net_role != ROLE_CLIENT:
+                                            boss.projectiles.remove(proj)
+                                        took_damage = True
+                                        break
+                                
+                                # B. Check Platform Fire
+                                if not took_damage:
+                                    if boss.check_platform_fire_damage(pl.rect()):
+                                        # Handle fire timer locally per player object
+                                        if not hasattr(pl, 'fire_timer'): pl.fire_timer = 0
+                                        pl.fire_timer -= dt
+                                        if pl.fire_timer <= 0:
+                                            took_damage = True
+                                            pl.fire_timer = 0.5 # Tick damage rate
+                                    else:
+                                        pl.fire_timer = 0
+
+                                # C. Check Body Collision (Contact Damage)
+                                if not took_damage and boss.state == "ATTACKING":
+                                    if pl.rect().colliderect(boss.rect()):
+                                        took_damage = True
+
+                                # --- APPLY DAMAGE ---
+                                if took_damage:
+                                    # If it's the Host/Local Player
+                                    if pl == local_player or net_role == ROLE_LOCAL_ONLY:
+                                        pl.take_damage(1, source_x=boss.x + boss.w//2)
                                     
-                            # Player hitting Boss (Host Only Authority for Boss Health)
-                            if net_role != ROLE_CLIENT:
-                                # Check all potential attackers (Host and Client)
-                                attackers = []
-                                if net_role == ROLE_LOCAL_ONLY:
-                                    if use_p1 and p1.alive: attackers.append(p1)
-                                    if use_p2 and p2.alive: attackers.append(p2)
-                                else:
-                                    if local_player.alive: attackers.append(local_player)
-                                    if remote_player.alive: attackers.append(remote_player)
+                                    # If it's the Remote Client (Player 2)
+                                    elif net_role == ROLE_HOST and pl == remote_player:
+                                        # 1. Apply visual knockback on Host side so Host sees P2 get hit
+                                        pl.take_damage(1, source_x=boss.x + boss.w//2)
+                                        # 2. Send Packet to Client so P2 actually takes damage
+                                        network.send_damage_to_client(1)
 
-                                for attacker in attackers:
-                                    if attacker.rect().colliderect(boss.rect()):
-                                        # Attack Logic
-                                        if boss.state == "TIRED" and (attacker.slam_active or attacker.vy > 100):
-                                            died = boss.take_damage(1)
-                                            attacker.vy = -350
-                                            if died:
-                                                boss_defeated = True
-                                                p1_orbs += 5
-                                                boss_room.activate_victory()
-                                        # Damage Logic (Boss hurts player)
-                                        elif boss.state == "ATTACKING" and boss.recovery_timer <= 0:
-                                            # Apply damage to attacker
-                                            attacker.take_damage(1, source_x=boss.x + boss.w//2)
-                                            # If attacker is remote player, Host sends damage packet
-                                            if net_role == ROLE_HOST and attacker == remote_player:
-                                                network.send_damage_to_client(1)
+                        # --- 4. PLAYER ATTACKING BOSS ---
+                        # (Host calculates damage received by boss)
+                        if net_role != ROLE_CLIENT:
+                            attackers = []
+                            if net_role == ROLE_LOCAL_ONLY:
+                                if use_p1 and p1.alive: attackers.append(p1)
+                                if use_p2 and p2.alive: attackers.append(p2)
+                            else:
+                                if local_player.alive: attackers.append(local_player)
+                                if remote_player.alive: attackers.append(remote_player)
 
-                    # Collect credits
+                            for attacker in attackers:
+                                if attacker.rect().colliderect(boss.rect()):
+                                    if boss.state == "TIRED" and (attacker.slam_active or attacker.vy > 100):
+                                        died = boss.take_damage(1)
+                                        attacker.vy = -350
+                                        if died:
+                                            boss_defeated = True
+                                            boss.alive = False
+                                            p1_orbs += 5 # Host gets orbs
+                                            boss_room.activate_victory()
+
+                    # Collect credits logic
                     credits_collected = boss_room.collect_credit(local_player.rect())
                     if credits_collected > 0:
                         session_credits += credits_collected
                         
-                    # Check return portal (End of fight) OR Forced Exit by Host
+                    # Check return portal (End of fight)
                     should_exit = False
                     
                     if boss_defeated and boss_room.check_portal_entry(local_player.rect()):
                         should_exit = True
                     
-                    # CLIENT: Exit if Host deactivated boss room
+                    # CLIENT: Exit if Host deactivated boss room (Sync exit)
                     if net_role == ROLE_CLIENT:
                         rb_state = network.get_boss_state()
                         if not rb_state["active"]:
@@ -5056,11 +5140,10 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                         local_player.vx, local_player.vy = 0, 0
                         local_player.slam_active, local_player.dash_active = False, False
                         
-                        # Reset Boss Active State on Network
                         if net_role == ROLE_HOST:
                             network.remote_boss_state["active"] = False
 
-                        # Restore music
+                        # Restore Game Music
                         if os.path.exists(GAME_BGM_PATH):
                             try:
                                 pygame.mixer.music.stop()
