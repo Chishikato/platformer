@@ -1694,16 +1694,22 @@ class NetworkManager:
         self.sock = None
         self.connected = False
         self.lock = threading.Lock()
-        self.remote_state = {"x": 0.0, "y": 0.0, "alive": True, "score": 0, "seed": 0, "hp": 3}
-        self.remote_lobby_mode = None 
+        self.remote_state = {"x": 0.0, "y": 0.0, "alive": True, "score": 0, "seed": 0, "hp": 3, "vx": 0.0, "vy": 0.0, "facing_right": True}
+        self.remote_lobby_mode = None
+        self.remote_enemy_kills = []  # List of enemy IDs to remove 
         self._recv_buffer = ""
         self.remote_game_over = False
         self.remote_winner_text = ""
         self.remote_start_triggered = False 
+        self.remote_lobby_exit = False  # Signal to return to lobby
         self.scanner = RoomScanner()
         self.broadcasting = False
         self.hosting = False 
         self.server_socket = None
+        self.remote_char_color = 3  # Default color index
+        self.remote_char_ability = 0  # Default ability index
+        self.remote_boss_hp = None  # Boss HP from host
+        self.remote_boss_defeated = False  # Boss defeated status
 
     def close(self):
         self.hosting = False 
@@ -1789,9 +1795,9 @@ class NetworkManager:
         t = threading.Thread(target=client_thread, daemon=True)
         t.start()
 
-    def send_local_state(self, px, py, alive, score, seed=0, hp=3):
+    def send_local_state(self, px, py, alive, score, seed=0, hp=3, vx=0, vy=0, facing_right=True):
         if not self.connected or not self.sock: return
-        line = f"{px:.2f},{py:.2f},{int(alive)},{int(score)},{int(seed)},{int(hp)}\n"
+        line = f"{px:.2f},{py:.2f},{int(alive)},{int(score)},{int(seed)},{int(hp)},{vx:.2f},{vy:.2f},{int(facing_right)}\n"
         try: self.sock.sendall(line.encode("utf-8"))
         except: pass
 
@@ -1810,6 +1816,41 @@ class NetworkManager:
     def send_start_game(self):
         if not self.connected or not self.sock: return
         line = "S|START\n"
+        try: self.sock.sendall(line.encode("utf-8"))
+        except: pass
+    
+    def send_kick(self):
+        """Host sends kick signal to client"""
+        if not self.connected or not self.sock: return
+        line = "K|KICK\n"
+        try: self.sock.sendall(line.encode("utf-8"))
+        except: pass
+    
+    def send_char_selection(self, color_index, ability_index):
+        """Send character selection (color and ability) to other player"""
+        if not self.connected or not self.sock: return
+        line = f"C|{color_index},{ability_index}\n"
+        try: self.sock.sendall(line.encode("utf-8"))
+        except: pass
+    
+    def send_enemy_kill(self, enemy_id):
+        """Host sends enemy kill event to client"""
+        if not self.connected or not self.sock: return
+        line = f"E|{enemy_id}\n"
+        try: self.sock.sendall(line.encode("utf-8"))
+        except: pass
+    
+    def send_boss_state(self, boss_hp, boss_defeated):
+        """Host sends boss state to client"""
+        if not self.connected or not self.sock: return
+        line = f"B|{int(boss_hp)},{int(boss_defeated)}\n"
+        try: self.sock.sendall(line.encode("utf-8"))
+        except: pass
+    
+    def send_lobby_exit(self):
+        """Send signal to return to lobby"""
+        if not self.connected or not self.sock: return
+        line = "L|EXIT\n"
         try: self.sock.sendall(line.encode("utf-8"))
         except: pass
 
@@ -1850,6 +1891,42 @@ class NetworkManager:
             if line.startswith("S|"):
                 with self.lock: self.remote_start_triggered = True
                 continue
+            if line.startswith("C|"):
+                # Character selection message: C|color_index,ability_index
+                try:
+                    parts = line[2:].strip().split(",")
+                    if len(parts) == 2:
+                        with self.lock:
+                            self.remote_char_color = int(parts[0])
+                            self.remote_char_ability = int(parts[1])
+                except: pass
+                continue
+            
+            # Enemy kill event
+            if line.startswith("E|"):
+                try:
+                    enemy_id = int(line[2:].strip())
+                    with self.lock:
+                        self.remote_enemy_kills.append(enemy_id)
+                except: pass
+                continue
+            
+            # Boss state sync
+            if line.startswith("B|"):
+                try:
+                    parts = line[2:].strip().split(",")
+                    if len(parts) == 2:
+                        with self.lock:
+                            self.remote_boss_hp = int(parts[0])
+                            self.remote_boss_defeated = bool(int(parts[1]))
+                except: pass
+                continue
+            
+            # Lobby exit signal
+            if line.startswith("L|"):
+                with self.lock:
+                    self.remote_lobby_exit = True
+                continue
             
             # (Rest of standard position parsing...)
             parts = line.split(",")
@@ -1859,15 +1936,41 @@ class NetworkManager:
                 alive, score = bool(int(parts[2])), int(parts[3])
                 r_seed = int(parts[4]) if len(parts) > 4 else 0
                 r_hp = int(parts[5]) if len(parts) > 5 else 3
+                r_vx = float(parts[6]) if len(parts) > 6 else 0.0
+                r_vy = float(parts[7]) if len(parts) > 7 else 0.0
+                r_facing = bool(int(parts[8])) if len(parts) > 8 else True
             except ValueError: continue
             with self.lock:
-                self.remote_state.update({"x": rx, "y": ry, "alive": alive, "score": score, "seed": r_seed, "hp": r_hp})
+                self.remote_state.update({"x": rx, "y": ry, "alive": alive, "score": score, "seed": r_seed, "hp": r_hp, "vx": r_vx, "vy": r_vy, "facing_right": r_facing})
 
     def get_remote_state(self):
         with self.lock: return dict(self.remote_state)
     
     def get_remote_lobby_mode(self):
         with self.lock: return self.remote_lobby_mode
+    
+    def get_remote_char_selection(self):
+        """Get remote player's character selection"""
+        with self.lock: return self.remote_char_color, self.remote_char_ability
+    
+    def get_enemy_kills(self):
+        """Get and clear list of enemy IDs killed by remote player"""
+        with self.lock:
+            kills = self.remote_enemy_kills[:]
+            self.remote_enemy_kills.clear()
+            return kills
+    
+    def get_boss_state(self):
+        """Get current boss state from host"""
+        with self.lock:
+            return self.remote_boss_hp, self.remote_boss_defeated
+    
+    def check_lobby_exit(self):
+        """Check if remote player signaled lobby exit"""
+        with self.lock:
+            val = self.remote_lobby_exit
+            self.remote_lobby_exit = False
+            return val
 
     def check_remote_start(self):
         with self.lock:
@@ -2583,9 +2686,15 @@ class Enemy:
     def draw(self, surf, cam_x, cam_y):
         if not self.alive: return
         
+        draw_x = self.x - cam_x
+        draw_y = self.y - cam_y
+        
         # Retrieve frames
         frames = self.sprites.get(self.current_action, self.sprites.get("walk", []))
-        if not frames: return
+        if not frames:
+            # Fallback: draw red rectangle if sprites missing
+            pygame.draw.rect(surf, (255, 0, 0), (draw_x, draw_y, self.w, self.h))
+            return
 
         # Loop animation
         img = frames[self.frame_index % len(frames)]
@@ -2593,9 +2702,6 @@ class Enemy:
         # Flip if moving right
         if self.facing_right:
             img = pygame.transform.flip(img, True, False)
-
-        draw_x = self.x - cam_x
-        draw_y = self.y - cam_y
 
         # Visual Flash effect when hurt
         if self.current_action == "hurt":
@@ -3294,8 +3400,13 @@ def main():
         
         # LAN button
         def choose_lan():
-            nonlocal mp_connection_type
+            nonlocal mp_connection_type, p1_color_index, p2_color_index, p1_ability_index, p2_ability_index
             mp_connection_type = "lan"
+            # Host controls P1, set consistent defaults
+            p1_color_index = 3  # Blue (host)
+            p2_color_index = 1  # Red (client will control)
+            p1_ability_index = 0
+            p2_ability_index = 0
             network.host()  # Start hosting
             set_state(STATE_MP_CHARACTER_SELECT)
         
@@ -3319,62 +3430,83 @@ def main():
         def p1_prev_color():
             nonlocal p1_color_index
             p1_color_index = (p1_color_index - 1) % len(CHARACTER_COLORS)
+            if mp_connection_type == "lan" and network.role == ROLE_HOST:
+                network.send_char_selection(p1_color_index, p1_ability_index)
             rebuild_mp_character_select()
         
         def p1_next_color():
             nonlocal p1_color_index
             p1_color_index = (p1_color_index + 1) % len(CHARACTER_COLORS)
+            if mp_connection_type == "lan" and network.role == ROLE_HOST:
+                network.send_char_selection(p1_color_index, p1_ability_index)
             rebuild_mp_character_select()
         
         # P1 Ability arrows
         def p1_prev_ability():
             nonlocal p1_ability_index
             p1_ability_index = (p1_ability_index - 1) % len(CHARACTER_ABILITIES)
+            if mp_connection_type == "lan" and network.role == ROLE_HOST:
+                network.send_char_selection(p1_color_index, p1_ability_index)
         
         def p1_next_ability():
             nonlocal p1_ability_index
             p1_ability_index = (p1_ability_index + 1) % len(CHARACTER_ABILITIES)
+            if mp_connection_type == "lan" and network.role == ROLE_HOST:
+                network.send_char_selection(p1_color_index, p1_ability_index)
         
-        # P2 Color arrows (only for local mode)
+        # P2 Color arrows
         def p2_prev_color():
             nonlocal p2_color_index
-            if mp_connection_type == "local":
-                p2_color_index = (p2_color_index - 1) % len(CHARACTER_COLORS)
-                rebuild_mp_character_select()
+            p2_color_index = (p2_color_index - 1) % len(CHARACTER_COLORS)
+            if mp_connection_type == "lan" and network.role == ROLE_CLIENT:
+                network.send_char_selection(p2_color_index, p2_ability_index)
+            rebuild_mp_character_select()
         
         def p2_next_color():
             nonlocal p2_color_index
-            if mp_connection_type == "local":
-                p2_color_index = (p2_color_index + 1) % len(CHARACTER_COLORS)
-                rebuild_mp_character_select()
+            p2_color_index = (p2_color_index + 1) % len(CHARACTER_COLORS)
+            if mp_connection_type == "lan" and network.role == ROLE_CLIENT:
+                network.send_char_selection(p2_color_index, p2_ability_index)
+            rebuild_mp_character_select()
         
-        # P2 Ability arrows (only for local mode)
+        # P2 Ability arrows
         def p2_prev_ability():
             nonlocal p2_ability_index
-            if mp_connection_type == "local":
-                p2_ability_index = (p2_ability_index - 1) % len(CHARACTER_ABILITIES)
+            p2_ability_index = (p2_ability_index - 1) % len(CHARACTER_ABILITIES)
+            if mp_connection_type == "lan" and network.role == ROLE_CLIENT:
+                network.send_char_selection(p2_color_index, p2_ability_index)
         
         def p2_next_ability():
             nonlocal p2_ability_index
-            if mp_connection_type == "local":
-                p2_ability_index = (p2_ability_index + 1) % len(CHARACTER_ABILITIES)
+            p2_ability_index = (p2_ability_index + 1) % len(CHARACTER_ABILITIES)
+            if mp_connection_type == "lan" and network.role == ROLE_CLIENT:
+                network.send_char_selection(p2_color_index, p2_ability_index)
         
-        # P1 buttons (left side)
+        # P1 buttons (left side) - disabled for client in LAN mode
         p1_x = 210  # Match P1 center position
-        mp_char_buttons.append(Button(pygame.Rect(p1_x - 70, 220, 40, 35), "<", font_med, p1_prev_color))
-        mp_char_buttons.append(Button(pygame.Rect(p1_x + 30, 220, 40, 35), ">", font_med, p1_next_color))
-        mp_char_buttons.append(Button(pygame.Rect(p1_x - 70, 290, 40, 35), "<", font_med, p1_prev_ability))
-        mp_char_buttons.append(Button(pygame.Rect(p1_x + 30, 290, 40, 35), ">", font_med, p1_next_ability))
+        p1_color_left = Button(pygame.Rect(p1_x - 70, 220, 40, 35), "<", font_med, p1_prev_color)
+        p1_color_right = Button(pygame.Rect(p1_x + 30, 220, 40, 35), ">", font_med, p1_next_color)
+        p1_ability_left = Button(pygame.Rect(p1_x - 70, 290, 40, 35), "<", font_med, p1_prev_ability)
+        p1_ability_right = Button(pygame.Rect(p1_x + 30, 290, 40, 35), ">", font_med, p1_next_ability)
         
-        # P2 buttons (right side) - only enabled for local
+        # Disable P1 buttons if we're the client (P2)
+        if network.role == ROLE_CLIENT:
+            p1_color_left.disabled = True
+            p1_color_right.disabled = True
+            p1_ability_left.disabled = True
+            p1_ability_right.disabled = True
+        
+        mp_char_buttons.extend([p1_color_left, p1_color_right, p1_ability_left, p1_ability_right])
+        
+        # P2 buttons (right side)
         p2_x = 430  # Match P2 center position
         p2_color_left = Button(pygame.Rect(p2_x - 70, 220, 40, 35), "<", font_med, p2_prev_color)
         p2_color_right = Button(pygame.Rect(p2_x + 30, 220, 40, 35), ">", font_med, p2_next_color)
         p2_ability_left = Button(pygame.Rect(p2_x - 70, 290, 40, 35), "<", font_med, p2_prev_ability)
         p2_ability_right = Button(pygame.Rect(p2_x + 30, 290, 40, 35), ">", font_med, p2_next_ability)
         
-        if mp_connection_type != "local":
-            # Grey out P2 buttons for LAN mode
+        # Disable P2 buttons if we're the host (P1) in LAN mode
+        if mp_connection_type == "lan" and network.role == ROLE_HOST:
             p2_color_left.disabled = True
             p2_color_right.disabled = True
             p2_ability_left.disabled = True
@@ -3409,26 +3541,58 @@ def main():
                                  p1_ability=p1_ab, p2_ability=p2_ab)
         
         # Bottom buttons
-        # Return button (left)
+        # Return button (left) - Different text for host vs client
         def return_action():
             if mp_connection_type == "lan":
+                if network.role == ROLE_HOST:
+                    # Host disbands: Send kick to client first
+                    if network.connected:
+                        network.send_kick()
+                        time.sleep(0.1)  # Give time for kick message to send
                 network.close()
-            set_state(STATE_MP_MODE)
+            if network.role == ROLE_CLIENT:
+                set_state(STATE_MP_ROOM_BROWSER)
+            else:
+                set_state(STATE_MP_MODE)
         
-        mp_char_buttons.append(Button(pygame.Rect(80, 380, 140, 45), "RETURN", font_med, return_action))
+        # Different button text based on role
+        if mp_connection_type == "lan" and network.role == ROLE_HOST:
+            button_text = "DISBAND"
+        elif mp_connection_type == "lan" and network.role == ROLE_CLIENT:
+            button_text = "LEAVE ROOM"
+        else:
+            button_text = "RETURN"
         
-        # Mode toggle button (center)
-        def toggle_mp_mode():
-            nonlocal mp_mode
-            mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
-            rebuild_mp_character_select()
+        mp_char_buttons.append(Button(pygame.Rect(80, 380, 140, 45), button_text, font_med, return_action))
         
-        mode_text = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Versus'}"
-        mp_char_buttons.append(Button(pygame.Rect(250, 380, 140, 45), mode_text, font_med, toggle_mp_mode))
+        # Mode toggle button (center) - Only show for host or local
+        if network.role != ROLE_CLIENT:
+            def toggle_mp_mode():
+                nonlocal mp_mode
+                mp_mode = MODE_COOP if mp_mode == MODE_VERSUS else MODE_VERSUS
+                # Update broadcast if hosting
+                if network.role == ROLE_HOST:
+                    network.scanner.broadcast_mode = mp_mode
+                rebuild_mp_character_select()
+            
+            mode_text = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Versus'}"
+            mp_char_buttons.append(Button(pygame.Rect(250, 380, 140, 45), mode_text, font_med, toggle_mp_mode))
+        else:
+            # Client just shows the mode (no toggle)
+            mode_text = f"Mode: {'Co-op' if mp_mode == MODE_COOP else 'Versus'}"
+            mode_label = Button(pygame.Rect(250, 380, 140, 45), mode_text, font_med, lambda: None)
+            mode_label.disabled = True
+            mp_char_buttons.append(mode_label)
         
-        # Start button (right)
-        mp_char_buttons.append(Button(pygame.Rect(420, 380, 140, 45), "START", font_med, 
-                                      start_mp_game, accent=COL_ACCENT_3))
+        # Start button (right) - Only show for host or local
+        if network.role != ROLE_CLIENT:
+            mp_char_buttons.append(Button(pygame.Rect(420, 380, 140, 45), "START", font_med, 
+                                          start_mp_game, accent=COL_ACCENT_3))
+        else:
+            # Client shows "Waiting..." instead
+            waiting_label = Button(pygame.Rect(420, 380, 140, 45), "Waiting...", font_med, lambda: None)
+            waiting_label.disabled = True
+            mp_char_buttons.append(waiting_label)
     
     def rebuild_mp_room_browser():
         """Server list for joining rooms"""
@@ -3452,8 +3616,21 @@ def main():
         
         # Join Room button (right) - disabled if no room selected
         def join_room_action():
+            nonlocal mp_connection_type, mp_mode, p1_color_index, p2_color_index, p1_ability_index, p2_ability_index
             if selected_room:
+                # Get the mode from the room list
+                if selected_room in room_list:
+                    mp_mode = room_list[selected_room]
                 network.join(selected_room)
+                mp_connection_type = "lan"
+                # Client controls P2, so initialize P2's colors
+                # Keep P1's defaults for what host shows, P2 will update via network
+                p1_color_index = 3  # Blue (what host has)
+                p2_color_index = 1  # Red (what client controls)
+                p1_ability_index = 0
+                p2_ability_index = 0
+                # Transition to character select as client
+                set_state(STATE_MP_CHARACTER_SELECT)
         
         join_btn = Button(pygame.Rect(VIRTUAL_W - 220, VIRTUAL_H - 70, 140, 40), 
                           "Join Room", font_med, join_room_action, accent=COL_ACCENT_3)
@@ -3529,7 +3706,58 @@ def main():
         if game_state == STATE_MP_ROOM_BROWSER:
             network.scanner.listen()
             current_hosts = network.scanner.found_hosts
-            if current_hosts != room_list: room_list = dict(current_hosts)
+            # Always update room_list to catch mode changes
+            room_list = dict(current_hosts)
+        
+        # Handle character select for LAN multiplayer
+        if game_state == STATE_MP_CHARACTER_SELECT and mp_connection_type == "lan":
+            if network.role == ROLE_HOST:
+                # Host sends lobby mode to client and broadcasts to server list
+                host_sync_timer += dt
+                if host_sync_timer > 0.5: 
+                    network.send_lobby_mode(mp_mode)
+                    # Update broadcast mode for server list
+                    network.scanner.broadcast(mp_mode)
+                    host_sync_timer = 0
+                
+                # Host receives P2's character selection from client
+                network.poll_remote_state()
+                remote_color, remote_ability = network.get_remote_char_selection()
+                if remote_color != p2_color_index or remote_ability != p2_ability_index:
+                    p2_color_index = remote_color
+                    p2_ability_index = remote_ability
+                    rebuild_mp_character_select()
+            elif network.role == ROLE_CLIENT:
+                # Client receives mode updates from host
+                network.poll_remote_state()
+                
+                # Check if kicked (disconnected by host)
+                if not network.connected:
+                    set_state(STATE_MP_ROOM_BROWSER)
+                    continue
+                
+                # Receive P1's character selection from host
+                remote_color, remote_ability = network.get_remote_char_selection()
+                if remote_color != p1_color_index or remote_ability != p1_ability_index:
+                    p1_color_index = remote_color
+                    p1_ability_index = remote_ability
+                    rebuild_mp_character_select()
+                
+                remote_mode = network.get_remote_lobby_mode()
+                if remote_mode and remote_mode != mp_mode:
+                    mp_mode = remote_mode
+                    rebuild_mp_character_select()
+                # Check if host started the game
+                if network.check_remote_start():
+                    p1_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[p1_color_index]["row"])
+                    p2_sprites = load_character_sprites(slime_path, CHARACTER_COLORS[p2_color_index]["row"])
+                    p1_ab = CHARACTER_ABILITIES[p1_ability_index]["name"]
+                    p2_ab = CHARACTER_ABILITIES[p2_ability_index]["name"]
+                    start_game_wrapper(settings, window, canvas, font_small, font_med, font_big, 
+                                     p1_sprites, p2_sprites, enemy_sprite_dict, tile_surf, 
+                                     wall_surf, lb, network, network.role, mp_mode, None, 
+                                     local_two_players=False, bg_obj=night_bg,
+                                     p1_ability=p1_ab, p2_ability=p2_ab)
         
         if game_state == STATE_MULTIPLAYER_MENU:
             network.scanner.listen()
@@ -3958,17 +4186,11 @@ def main():
             p2_center_x = 430
             p2_center_y = 140
             
-            if mp_connection_type == "lan":
-                # Grey out for LAN, show "Waiting for player..."
-                pygame.draw.circle(canvas, (30, 30, 40), (p2_center_x, p2_center_y), 50)
-                pygame.draw.circle(canvas, (80, 80, 90), (p2_center_x, p2_center_y), 50, 3)
-                draw_text_shadow(canvas, font_small, "P2", p2_center_x, 90, center=True, col=(100, 100, 110))
-                draw_text_shadow(canvas, font_small, "Waiting for player...", p2_center_x, p2_center_y, center=True, col=(150, 150, 160))
-                # Grey selections
-                draw_text_shadow(canvas, font_med, "---", p2_center_x, 237, center=True, col=(80, 80, 90))
-                draw_text_shadow(canvas, font_med, "---", p2_center_x, 307, center=True, col=(80, 80, 90))
-            else:
-                # Local mode - show P2 normally
+            # Check if we should show P2 (local mode OR LAN mode with connected player)
+            show_p2 = (mp_connection_type == "local") or (mp_connection_type == "lan" and network.connected)
+            
+            if show_p2:
+                # Show P2 normally
                 pygame.draw.circle(canvas, COL_UI_BG, (p2_center_x, p2_center_y), 50)
                 pygame.draw.circle(canvas, COL_ACCENT_2, (p2_center_x, p2_center_y), 50, 3)
                 if p2_preview_sprites:
@@ -3980,6 +4202,15 @@ def main():
                 p2_ability = CHARACTER_ABILITIES[p2_ability_index]["name"]
                 draw_text_shadow(canvas, font_med, f"{p2_color}", p2_center_x, 237, center=True, col=COL_ACCENT_2)
                 draw_text_shadow(canvas, font_med, f"{p2_ability}", p2_center_x, 307, center=True, col=COL_ACCENT_2)
+            else:
+                # Grey out - waiting for player to join
+                pygame.draw.circle(canvas, (30, 30, 40), (p2_center_x, p2_center_y), 50)
+                pygame.draw.circle(canvas, (80, 80, 90), (p2_center_x, p2_center_y), 50, 3)
+                draw_text_shadow(canvas, font_small, "P2", p2_center_x, 90, center=True, col=(100, 100, 110))
+                draw_text_shadow(canvas, font_small, "Waiting for player...", p2_center_x, p2_center_y, center=True, col=(150, 150, 160))
+                # Grey selections
+                draw_text_shadow(canvas, font_med, "---", p2_center_x, 237, center=True, col=(80, 80, 90))
+                draw_text_shadow(canvas, font_med, "---", p2_center_x, 307, center=True, col=(80, 80, 90))
             
             # Draw buttons
             for b in mp_char_buttons: b.draw(canvas, dt)
@@ -4336,7 +4567,12 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT: running = False; return
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: running = False; return
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                # Send lobby exit signal to other player if networked
+                if net_role != ROLE_LOCAL_ONLY:
+                    network.send_lobby_exit()
+                running = False
+                return
             elif event.type == pygame.VIDEORESIZE: window = pygame.display.set_mode(event.size, pygame.RESIZABLE)
 
         keys = pygame.key.get_pressed()
@@ -4344,17 +4580,40 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
             network.poll_remote_state()
             flag, text = network.consume_remote_game_over()
             if flag and not game_over: game_over = True; winner_text = text
+            
+            # Check if remote player exited to lobby
+            if network.check_lobby_exit():
+                running = False
+                return
 
         if not game_over:
             if net_role != ROLE_LOCAL_ONLY:
                 # Use Horizontal Distance for score sync
                 lt = int(p1_distance/10 + p1_orbs * 100) if local_player is p1 else int(p2_distance/10 + p2_orbs * 100)
                 send_seed = game_seed if net_role == ROLE_HOST else 0
-                network.send_local_state(local_player.x, local_player.y, local_player.alive, lt, send_seed, local_player.hp)
+                network.send_local_state(local_player.x, local_player.y, local_player.alive, lt, send_seed, local_player.hp, 
+                                        local_player.vx, local_player.vy, local_player.facing_right)
                 network.poll_remote_state()
                 rstate = network.get_remote_state()
                 remote_player.x, remote_player.y, remote_player.alive = rstate["x"], rstate["y"], rstate["alive"]
                 remote_player.hp = rstate.get("hp", 3)
+                remote_player.vx = rstate.get("vx", 0.0)
+                remote_player.vy = rstate.get("vy", 0.0)
+                remote_player.facing_right = rstate.get("facing_right", True)
+                
+                # Update remote player's score values for real-time scoreboard display
+                remote_score = rstate.get("score", 0)
+                if remote_player is p1:
+                    # Remote is P1, update P1's distance and orbs based on received score
+                    # Score formula: distance/10 + orbs*100
+                    # We'll approximate: use existing orbs if reasonable, otherwise recalculate
+                    p1_orbs = remote_score // 100
+                    p1_distance = (remote_score % 100) * 10
+                else:
+                    # Remote is P2, update P2's distance and orbs based on received score
+                    p2_orbs = remote_score // 100
+                    p2_distance = (remote_score % 100) * 10
+                
                 if waiting_for_seed and rstate["seed"] != 0:
                     game_seed = rstate["seed"]
                     level = LevelManager(tile_surf, enemy_sprite_dict, game_seed)
@@ -4418,17 +4677,19 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                                 if hasattr(local_player, 'fire_damage_timer'):
                                     local_player.fire_damage_timer = 0
                                     
-                            # --- BOSS COLLISION LOGIC ---
+                            # --- BOSS COLLISION LOGIC (SERVER-AUTHORITATIVE) ---
                             if local_player.rect().colliderect(boss.rect()):
                                 # CASE A: Player hits Boss (Only when boss is tired)
-                                if boss.state == "TIRED" and (local_player.slam_active or local_player.vy > 100):
-                                    died = boss.take_damage(1)
-                                    local_player.vy = -350  # Bounce player
-                                    
-                                    if died:
-                                        boss_defeated = True
-                                        p1_orbs += 5  # Reward
-                                        boss_room.activate_victory()
+                                # Only host processes damage to boss
+                                if net_role != ROLE_CLIENT:
+                                    if boss.state == "TIRED" and (local_player.slam_active or local_player.vy > 100):
+                                        died = boss.take_damage(1)
+                                        local_player.vy = -350  # Bounce player
+                                        
+                                        if died:
+                                            boss_defeated = True
+                                            p1_orbs += 5  # Reward
+                                            boss_room.activate_victory()
                                 
                                 # CASE B: Boss hits Player (Contact Damage)
                                 elif boss.state == "ATTACKING" and boss.recovery_timer <= 0:
@@ -4613,25 +4874,27 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                     player.invul_timer = 0.5 
                     player.flash_on_invul = False
                     
-                    for e in level.enemies:
-                        if not e.alive: continue
-                        ex, ey = e.x + e.w / 2, e.y + e.h / 2
-                        
-                        # Radial Collision check
-                        if (ex - cx)**2 + (ey - cy)**2 <= radius**2: 
-                             damage = 1.0 # Default damage
-                             
-                             # If it is NOT a boss, set damage to current HP (Insta-Kill)
-                             if not getattr(e, 'is_boss', False):
-                                 damage = e.max_hp 
+                    # SERVER-AUTHORITATIVE: Only host processes slam damage
+                    if net_role != ROLE_CLIENT:
+                        for e in level.enemies:
+                            if not e.alive: continue
+                            ex, ey = e.x + e.w / 2, e.y + e.h / 2
+                            
+                            # Radial Collision check
+                            if (ex - cx)**2 + (ey - cy)**2 <= radius**2: 
+                                 damage = 1.0 # Default damage
+                                 
+                                 # If it is NOT a boss, set damage to current HP (Insta-Kill)
+                                 if not getattr(e, 'is_boss', False):
+                                     damage = e.max_hp 
 
-                             died = e.take_damage(damage)
+                                 died = e.take_damage(damage)
 
-                             if died:
-                                 level.spawn_credit(e.x, e.y, 1.0)
-                             else:
-                                 # Visual feedback for hit
-                                 spawn_dust(e.x + e.w/2, e.y, 3, (255, 100, 100))
+                                 if died:
+                                     level.spawn_credit(e.x, e.y, 1.0)
+                                 else:
+                                     # Visual feedback for hit
+                                     spawn_dust(e.x + e.w/2, e.y, 3, (255, 100, 100))
 
                 def handle_collisions_for_player(player):
                     if not player.alive or player.is_dying: return
@@ -4657,47 +4920,43 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                             player.take_damage(1, source_x=obs.centerx) 
                             return
                     
-                    # Enemy Collisions
-                    for e in level.enemies: 
-                        if r.colliderect(e.rect()): 
-                            if player.dash_active: continue # Phase through enemies
-                            
-                            player_bottom = player.y + player.h
-                            enemy_center = e.y + e.h * 0.5
-                            is_above = player_bottom < enemy_center + 5
-                            is_falling = player.vy > 0
-                            
-                            if player.slam_active or (is_falling and is_above):
-                                damage = 0.5
+                    # Enemy Collisions (SERVER-AUTHORITATIVE: Only host processes enemy collisions)
+                    # Client skips this entirely and receives enemy states from host
+                    if net_role != ROLE_CLIENT:
+                        for e in level.enemies: 
+                            if r.colliderect(e.rect()): 
+                                if player.dash_active: continue # Phase through enemies
                                 
-                                if player.slam_active:
-                                    # If active slam AND not a boss -> Insta Kill
-                                    if not getattr(e, 'is_boss', False):
-                                        damage = e.max_hp
-                                    else:
-                                        damage = 1.0 # Standard damage for boss
-                                # ----------------------------
+                                player_bottom = player.y + player.h
+                                enemy_center = e.y + e.h * 0.5
+                                is_above = player_bottom < enemy_center + 5
+                                is_falling = player.vy > 0
                                 
-                                died = e.take_damage(damage)
-                                player.vy = -700.0 
-                                player.invul_timer = 0.2 
-                                player.flash_on_invul = False 
-                                
-                                player.slam_cooldown = 0 
-                                player.slam_active = False 
-                                
-                                if died:
-                                    level.spawn_credit(e.x, e.y, 1.0) 
-                                else:
-                                    spawn_dust(e.x + e.w/2, e.y, 3, (255, 50, 50))
-                            
-                            # --- PLAYER HIT LOGIC ---
-                            else: 
-                                if e.invul_timer > 0:
-                                    return
+                                if player.slam_active or (is_falling and is_above):
+                                    damage = 0.5
                                     
-                                player.take_damage(1, source_x=(e.x + e.w/2))
-                            return
+                                    if player.slam_active:
+                                        # If active slam AND not a boss -> Insta Kill
+                                        if not getattr(e, 'is_boss', False):
+                                            damage = e.max_hp
+                                        else:
+                                            damage = 1.0 # Standard damage for boss
+                                    # ----------------------------
+                                    
+                                    died = e.take_damage(damage)
+                                    player.vy = -700.0 
+                                    player.invul_timer = 0.2 
+                                    player.flash_on_invul = False 
+                                    
+                                    player.slam_cooldown = 0 
+                                    player.slam_active = False 
+                                    
+                                    if died:
+                                        level.spawn_credit(e.x, e.y, 1.0) 
+                                else:
+                                    # Player hit enemy from side - take damage
+                                    player.take_damage(1, source_x=(e.x + e.w/2))
+                                return
 
                 if net_role == ROLE_LOCAL_ONLY:
                     if p1_local and use_p1: handle_collisions_for_player(p1)
@@ -4706,7 +4965,44 @@ def start_game(settings, window, canvas, font_small, font_med, font_big, player1
                 
                 if use_p1: resolve_slam(p1)
                 if use_p2: resolve_slam(p2)
+                
+                # Server-authoritative enemy synchronization (Host is authority)
+                if net_role == ROLE_HOST:
+                    # Host sends enemy states to client
+                    for e in level.enemies:
+                        if not e.alive and not getattr(e, '_death_synced', False):
+                            # Send enemy kill position (x,y) to client for matching
+                            network.send_enemy_kill(int(e.x))
+                            e._death_synced = True
+                elif net_role == ROLE_CLIENT:
+                    # Client receives enemy kills from host and applies them
+                    killed_positions = network.get_enemy_kills()
+                    for enemy_x in killed_positions:
+                        # Find enemy at approximately this X position (within tolerance)
+                        for e in level.enemies:
+                            if abs(e.x - enemy_x) < 50 and e.alive:  # 50px tolerance
+                                e.alive = False
+                                e.hp = 0
+                                # Spawn death effects on client side too
+                                spawn_dust(e.x + e.w/2, e.y, 5, (150, 150, 150))
+                                break
+                
                 level.enemies = [e for e in level.enemies if e.alive]
+                
+                # Boss state synchronization
+                if in_boss_room and boss:
+                    if net_role == ROLE_HOST:
+                        # Host sends boss state to client
+                        network.send_boss_state(boss.hp, boss_defeated)
+                    elif net_role == ROLE_CLIENT:
+                        # Client receives and applies boss state from host
+                        remote_boss_hp, remote_boss_defeated = network.get_boss_state()
+                        if remote_boss_hp is not None:
+                            boss.hp = remote_boss_hp
+                        if remote_boss_defeated:
+                            boss_defeated = True
+                            boss.alive = False
+                            boss_room.activate_victory()
 
                 p1_total = int(p1_distance/10 + p1_orbs * 100)
                 p2_total = int(p2_distance/10 + p2_orbs * 100)
