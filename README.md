@@ -56,11 +56,12 @@ You play as a slime on an adventure (or a fever dream lol)
 
    ```bash
    pip install pygame-ce
+   ```
 
-Make sure platformer.py and the data/ folder stay in the same directory.
+3. From the project directory, run:
 
-From that directory, run:
+   ```bash
+   python main.py
+   ```
 
-    python platformer.py
-
-That’s it! The main menu will walk you through single-player, local co-op/versus, and LAN play.
+That's it! The main menu will walk you through single-player, local co-op/versus, and LAN play.
